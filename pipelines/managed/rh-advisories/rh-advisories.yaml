@@ -3,14 +3,15 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: rh-advisories
-  labels:
-    app.kubernetes.io/version: "2.1.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
-    Tekton pipeline to release content to registry.redhat.io and create an advisory
+  description: |-
+    Tekton pipeline to release content to registry.redhat.io registry and create an advisory.
+    This is a copy of v3.0.0 of the rh-push-to-registry-redhat-io pipeline, but with the advisory
+    tasks added in. The plan is for this pipeline to eventually be deleted and take the place of
+    the rh-push-to-registry-redhat-io pipeline.
   params:
     - name: release
       type: string
@@ -37,14 +38,6 @@ spec:
         Extra rule data to be merged into the policy specified in params.enterpriseContractPolicy. Use syntax
         "key1=value1,key2=value2..."
       default: "pipeline_intention=release"
-    - name: enterpriseContractTimeout
-      type: string
-      description: Timeout setting for `ec validate`
-      default: 8h0m0s
-    - name: enterpriseContractWorkerCount
-      type: string
-      description: Number of parallel workers for policy evaluation
-      default: 4
     - name: postCleanUp
       type: string
       description: Cleans up workspace after finishing executing the pipeline
@@ -55,6 +48,10 @@ spec:
     - name: verify_ec_task_git_revision
       type: string
       description: The git revision to be used when consuming the verify-conforma task
+    - name: mobster_tasks_git_revision
+      type: string
+      description: The git revision to be used when consuming Mobster tasks for SBOM processing
+      default: c298b1b9d1395d2fdb207472f267011b8a7e936c
     - name: taskGitUrl
       type: string
       description: The url to the git repo where the release-service-catalog tasks to be used are stored
@@ -64,13 +61,14 @@ spec:
       description: The revision in the taskGitUrl repo to be used
     - name: ociStorage
       type: string
+      description: The OCI repository where the Trusted Artifacts are stored
       default: "quay.io/konflux-ci/release-service-trusted-artifacts"
     - name: orasOptions
       description: oras options to pass to Trusted Artifacts calls
       type: string
       default: ""
     - name: trustedArtifactsDebug
-      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable
       type: string
       default: ""
     - name: dataDir
@@ -85,6 +83,9 @@ spec:
     - name: advisory_url
       type: string
       value: $(tasks.create-advisory.results.advisory_url)
+    - name: advisory_internal_url
+      type: string
+      value: $(tasks.create-advisory.results.advisory_internal_url)
   tasks:
     - name: verify-access-to-resources
       taskRef:
@@ -147,6 +148,49 @@ spec:
           workspace: release-workspace
       runAfter:
         - verify-access-to-resources
+    - name: collect-task-params
+      when:
+        - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
+          operator: in
+          values: ["false"]
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/collect-task-params/collect-task-params.yaml
+      params:
+        - name: dataDir
+          value: "$(params.dataDir)"
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: keysToExtract
+          value: |
+            [
+              {"resultIndex": 0, "key": ".conforma.workerCount", "default": "4"},
+              {"resultIndex": 1, "key": ".conforma.timeout", "default": "8h0m0s"},
+              {"resultIndex": 2, "key": ".sign.cosignSecretName", "default": ""},
+              {"resultIndex": 3, "key": ".pyxis.secret"},
+              {"resultIndex": 4, "key": ".pyxis.server", "default": "production"}
+            ]
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - collect-data
     - name: reduce-snapshot
       taskRef:
         resolver: "git"
@@ -280,8 +324,6 @@ spec:
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
           value: "$(params.taskGitRevision)"
-        - name: subdirectory
-          value: "$(tasks.collect-data.results.subdirectory)"
       workspaces:
         - name: data
           workspace: release-workspace
@@ -317,15 +359,16 @@ spec:
         - name: EXTRA_RULE_DATA
           value: $(params.enterpriseContractExtraRuleData)
         - name: TIMEOUT
-          value: $(params.enterpriseContractTimeout)
+          value: "$(tasks.collect-task-params.results.extractedValues[1])"
         - name: WORKERS
-          value: $(params.enterpriseContractWorkerCount)
+          value: "$(tasks.collect-task-params.results.extractedValues[0])"
         - name: SOURCE_DATA_ARTIFACT
           value: "$(tasks.filter-already-released-advisory-images.results.sourceDataArtifact)"
         - name: TRUSTED_ARTIFACTS_DEBUG
           value: "$(params.trustedArtifactsDebug)"
       runAfter:
         - filter-already-released-advisory-images
+        - collect-task-params
     - name: populate-release-notes
       when:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -436,44 +479,11 @@ spec:
       runAfter:
         - populate-release-notes
         - embargo-check
-    - name: collect-cosign-params
-      when:
-        - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
-          operator: in
-          values: ["false"]
-      taskRef:
-        resolver: "git"
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/collect-cosign-params/collect-cosign-params.yaml
-      params:
-        - name: dataPath
-          value: "$(tasks.collect-data.results.data)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.collect-data.results.sourceDataArtifact)"
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - collect-data
+        - push-snapshot
     - name: rh-sign-image-cosign
       timeout: "6h00m0s"
       when:
-        - input: $(tasks.collect-cosign-params.results.cosign-secret-name)
+        - input: $(tasks.collect-task-params.results.extractedValues[2])
           operator: notin
           values: [""]
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -492,7 +502,7 @@ spec:
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: secretName
-          value: "$(tasks.collect-cosign-params.results.cosign-secret-name)"
+          value: "$(tasks.collect-task-params.results.extractedValues[2])"
         - name: signRegistryAccessPath
           value: "$(tasks.publish-pyxis-repository.results.signRegistryAccessPath)"
         - name: ociStorage
@@ -513,7 +523,7 @@ spec:
       runAfter:
         - verify-conforma
         - push-snapshot
-        - collect-cosign-params
+        - collect-task-params
     - name: push-snapshot
       retries: 5
       when:
@@ -556,40 +566,6 @@ spec:
           workspace: release-workspace
       runAfter:
         - rh-sign-image
-    - name: collect-pyxis-params
-      when:
-        - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
-          operator: in
-          values: ["false"]
-      taskRef:
-        resolver: "git"
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/collect-pyxis-params/collect-pyxis-params.yaml
-      params:
-        - name: dataPath
-          value: "$(tasks.collect-data.results.data)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.collect-data.results.sourceDataArtifact)"
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - collect-data
     - name: rh-sign-image
       timeout: "6h00m0s"
       when:
@@ -622,9 +598,9 @@ spec:
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
         - name: pyxisServer
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: signRegistryAccessPath
           value: $(tasks.publish-pyxis-repository.results.signRegistryAccessPath)
         - name: ociStorage
@@ -647,6 +623,7 @@ spec:
         - verify-conforma
         - publish-pyxis-repository
         - extract-requester-from-release
+        - collect-task-params
     - name: create-pyxis-image
       when:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -664,9 +641,9 @@ spec:
             value: tasks/managed/create-pyxis-image/create-pyxis-image.yaml
       params:
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: rhPush
           value: "true"
         - name: snapshotPath
@@ -690,6 +667,7 @@ spec:
           workspace: release-workspace
       runAfter:
         - push-snapshot
+        - collect-task-params
     - name: publish-pyxis-repository
       when:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -707,9 +685,9 @@ spec:
             value: tasks/managed/publish-pyxis-repository/publish-pyxis-repository.yaml
       params:
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: dataPath
@@ -732,7 +710,7 @@ spec:
         - name: data
           workspace: release-workspace
       runAfter:
-        - collect-pyxis-params
+        - collect-task-params
         - apply-mapping
     - name: push-rpm-data-to-pyxis
       when:
@@ -753,9 +731,9 @@ spec:
         - name: pyxisJsonPath
           value: $(tasks.create-pyxis-image.results.pyxisDataPath)
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
@@ -775,7 +753,8 @@ spec:
           workspace: release-workspace
       runAfter:
         - create-pyxis-image
-    - name: update-component-sbom
+        - collect-task-params
+    - name: process-component-sbom
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -786,11 +765,11 @@ spec:
       taskRef:
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/konflux-ci/mobster.git
           - name: revision
-            value: $(params.taskGitRevision)
+            value: $(params.mobster_tasks_git_revision)
           - name: pathInRepo
-            value: tasks/managed/update-component-sbom/update-component-sbom.yaml
+            value: tasks/augment-component-sboms-ta/0.1/augment-component-sboms-ta.yaml
         resolver: git
       workspaces:
         - name: data
@@ -798,6 +777,16 @@ spec:
       params:
         - name: snapshotSpec
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: retryAWSSecretName
+          value: "$(tasks.collect-atlas-params.results.retryAWSSecretName)"
+        - name: retryS3Bucket
+          value: "$(tasks.collect-atlas-params.results.retryS3Bucket)"
+        - name: atlasSecretName
+          value: "$(tasks.collect-atlas-params.results.secretName)"
+        - name: ssoTokenUrl
+          value: "$(tasks.collect-atlas-params.results.ssoTokenUrl)"
+        - name: atlasApiUrl
+          value: "$(tasks.collect-atlas-params.results.atlasApiUrl)"
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
@@ -817,7 +806,7 @@ spec:
         - apply-mapping
         - collect-atlas-params
         - push-snapshot
-    - name: upload-component-sbom
+    - name: process-product-sbom
       when:
         - input: "$(tasks.collect-atlas-params.results.secretName)"
           operator: notin
@@ -825,9 +814,27 @@ spec:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
           operator: in
           values: ["false"]
+      taskRef:
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/mobster.git
+          - name: revision
+            value: $(params.mobster_tasks_git_revision)
+          - name: pathInRepo
+            value: tasks/create-product-sbom-ta/0.1/create-product-sbom-ta.yaml
+        resolver: git
+      workspaces:
+        - name: data
+          workspace: release-workspace
       params:
-        - name: sbomDir
-          value: "$(tasks.update-component-sbom.results.sbomPath)"
+        - name: snapshotSpec
+          value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: releaseData
+          value: "$(tasks.collect-data.results.data)"
+        - name: retryAWSSecretName
+          value: "$(tasks.collect-atlas-params.results.retryAWSSecretName)"
+        - name: retryS3Bucket
+          value: "$(tasks.collect-atlas-params.results.retryS3Bucket)"
         - name: atlasSecretName
           value: "$(tasks.collect-atlas-params.results.secretName)"
         - name: ssoTokenUrl
@@ -837,7 +844,7 @@ spec:
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
-          value: "$(tasks.update-component-sbom.results.sourceDataArtifact)"
+          value: "$(tasks.filter-already-released-advisory-images.results.sourceDataArtifact)"
         - name: subdirectory
           value: $(tasks.collect-data.results.subdirectory)
         - name: dataDir
@@ -848,24 +855,11 @@ spec:
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
           value: "$(params.taskGitRevision)"
-        - name: retryAWSSecretName
-          value: "$(tasks.collect-atlas-params.results.retryAWSSecretName)"
-        - name: retryS3Bucket
-          value: "$(tasks.collect-atlas-params.results.retryS3Bucket)"
-      taskRef:
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/upload-sbom-to-atlas/upload-sbom-to-atlas.yaml
-        resolver: git
-      workspaces:
-        - name: data
-          workspace: release-workspace
       runAfter:
-        - update-component-sbom
+        - collect-data
+        - apply-mapping
+        - collect-atlas-params
+        - push-snapshot
     - name: run-file-updates
       when:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -920,11 +914,13 @@ spec:
         - name: schema
           value:  $(params.taskGitUrl)/raw/$(params.taskGitRevision)/schema/dataKeys.json
         - name: systems
-          value:
-            - releaseNotes
-            - pyxis
-            - mapping
-            - sign
+          value: |
+            [
+              {"systemName": "releaseNotes", "dynamic": false},
+              {"systemName": "pyxis", "dynamic": false},
+              {"systemName": "mapping", "dynamic": false},
+              {"systemName": "sign", "dynamic": false}
+            ]
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
@@ -985,97 +981,7 @@ spec:
           workspace: release-workspace
       runAfter:
         - collect-data
-    - name: create-product-sbom
-      when:
-        - input: "$(tasks.collect-atlas-params.results.secretName)"
-          operator: notin
-          values: [""]
-        - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
-          operator: in
-          values: ["false"]
-      params:
-        - name: dataPath
-          value: "$(tasks.collect-data.results.data)"
-        - name: snapshotSpec
-          value: "$(tasks.collect-data.results.snapshotSpec)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.filter-already-released-advisory-images.results.sourceDataArtifact)"
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      taskRef:
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/create-product-sbom/create-product-sbom.yaml
-        resolver: git
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - apply-mapping
-        - collect-data
-        - collect-atlas-params
         - push-snapshot
-    - name: upload-product-sbom
-      when:
-        - input: "$(tasks.collect-atlas-params.results.secretName)"
-          operator: notin
-          values: [""]
-        - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
-          operator: in
-          values: ["false"]
-      params:
-        - name: sbomDir
-          value: "$(tasks.create-product-sbom.results.sbomPath)"
-        - name: atlasSecretName
-          value: "$(tasks.collect-atlas-params.results.secretName)"
-        - name: ssoTokenUrl
-          value: "$(tasks.collect-atlas-params.results.ssoTokenUrl)"
-        - name: atlasApiUrl
-          value: "$(tasks.collect-atlas-params.results.atlasApiUrl)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.create-product-sbom.results.sourceDataArtifact)"
-        - name: subdirectory
-          value: $(tasks.collect-data.results.subdirectory)
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-        - name: retryAWSSecretName
-          value: "$(tasks.collect-atlas-params.results.retryAWSSecretName)"
-        - name: retryS3Bucket
-          value: "$(tasks.collect-atlas-params.results.retryS3Bucket)"
-      taskRef:
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/upload-sbom-to-atlas/upload-sbom-to-atlas.yaml
-        resolver: git
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - create-product-sbom
     - name: create-advisory
       when:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
@@ -1089,6 +995,8 @@ spec:
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
+        - name: environment
+          value: "$(tasks.filter-already-released-advisory-images.results.environment)"
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
         - name: pipelineRunUid
@@ -1130,7 +1038,9 @@ spec:
         - input: "$(tasks.filter-already-released-advisory-images.results.skip_release)"
           operator: in
           values: ["false"]
-      onError: continue  # until https://issues.redhat.com/browse/KONFLUX-7489 is fixed
+        - input: "$(tasks.filter-already-released-advisory-images.results.environment)"
+          operator: in
+          values: ["production"]
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
@@ -1172,8 +1082,6 @@ spec:
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
-        - name: resultsDirName
-          value: "results"
         - name: ociStorage
           value: $(params.ociStorage)
         - name: resultArtifacts

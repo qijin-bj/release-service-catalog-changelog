@@ -3,14 +3,12 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: publish-index-image-task
-  labels:
-    app.kubernetes.io/version: "0.3.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
-      Task to publish a built FBC index image using skopeo
+  description: |-
+    Tekton task to publish a built FBC index image using skopeo
   params:
     - name: sourceIndex
       type: string
@@ -73,9 +71,9 @@ spec:
 
         echo "Getting target image digest: $(params.targetIndex)"
         if TARGET_DIGEST=$(skopeo inspect \
-            "${TARGET_AUTH_ARGS[@]}" \
             "docker://$(params.targetIndex)" \
-            --format '{{.Digest}}'); then
+            --format '{{.Digest}}' \
+            --retry-times "$(params.retries)"); then
             echo "Target image exists."
             echo "DEBUG: Source Digest - $SOURCE_DIGEST"
             echo "DEBUG: Target Digest - $TARGET_DIGEST"

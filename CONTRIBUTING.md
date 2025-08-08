@@ -73,7 +73,7 @@ Examples:
 
 Title prefixes:
 
-- **chore**: Changes that do not modify functionality (e.g., version bumps, tool updates, or maintenance tasks).
+- **chore**: Changes that do not modify functionality (e.g., tool updates, or maintenance tasks).
 - **docs**: Documentation updates or additions (e.g., README changes, inline comments).
 - **feat**: Introduction of a new feature or functionality.
 - **fix**: Bug fixes or corrections to existing functionality.
@@ -106,6 +106,48 @@ When referencing this image, the url should be `quay.io/konflux-ci/release-servi
 For other images, the reference should always either specify an image by a non-moving tag (e.g. `registry.access.redhat.com/ubi8/ubi:8.8-1067.1698056881`)
 or by its digest (e.g. `registry.access.redhat.com/ubi8/ubi@sha256:c94bc309b197f9fc465052123ead92bf50799ba72055bd040477ded`).
 Floating tags like `latest` or `8.8` in the case of the ubi image should be avoided.
+
+### Compute Resources
+
+All steps in the [managed](tasks/managed) and [internal](tasks/internal) tasks have `computeResources` defined. This is because the namespace in which these run is often under a very high load.
+If you are contributing a new managed or internal task (or adding a step to an existing one), you must provide appropriate `computeResources`. If you do not do this, your PR will fail
+the linting check due to the check defined in [this script](.github/scripts/tkn_check_compute_resources.sh).
+
+When setting `computeResources`, you should set the `limits.memory` and `requests.memory` to the same value. No `limits.cpu` should be defined, but a `requests.cpu` should be.
+Here is an example
+```yaml
+- name: my-new-step
+  computeResources:
+    limits:
+      memory: 256Mi
+    requests:
+      memory: 256Mi
+      cpu: 250m
+```
+
+### Keeping Documentation Up to Date
+
+Whenever a task or pipeline is changed, please run the `.github/scripts/readme_generator.sh` script with the
+changed task/pipeline directories as arguments to update the README.md description and parameter table.
+
+A check is run on each pull request to ensure that the README.md files in each task/pipeline are up to date and that task/pipeline
+descriptions (including parameter descriptions) are valid.
+
+You can run this check locally with the `.github/scripts/check_readme.sh` script.
+
+This script also checks if descriptions are present in each task/pipeline (and their parameters) and that they don't end with
+a trailing `.` or `,`
+
+Running `.github/scripts/check_readme.sh` locally is recommended to find these errors in task/pipeline/parameter descriptions.
+
+If you wish to update a task, pipeline, or task/pipeline parameter description, do **not** manually change the README.md file.
+
+Instead, you should change the descriptions in the `yaml` file associated with the task/pipeline, and then run `.github/scripts/readme_generator.sh`
+with the changed task/pipeline directories as arguments. This is because the task/pipeline `yaml` file is considered the source of truth for each 
+task/pipeline README.md file. If you manually change the README.md file without updating the yaml, `check_readme.sh` will fail and `readme_generator.sh`
+will overwrite your changes. You should never have to update the README.md file manually.
+
+For more information, check the `.github/scripts/readme_generator.sh` and `.github/scripts/check_readme.sh` scripts.
 
 ### Modes for Running Pipelines
 
@@ -200,10 +242,10 @@ call Pyxis API). The way to do this is to create a file with mock shell function
 as the commands you want to mock) and inject this file to the beginning of each `script` field in
 the task step that needs mocking.
 
-For reference implementation, check [create-pyxis-image/tests/](tasks/create-pyxis-image/tests/). Here's a breakdown of how it's done:
+For reference implementation, check [create-pyxis-image/tests/](tasks/managed/create-pyxis-image/tests/). Here's a breakdown of how it's done:
 
 1. Create a `mocks.sh` file in the tests directory of your task, e.g.
-    `tasks/create-pyxis-image/tests/mocks.sh`. This file will contain the mock function
+    `tasks/managed/create-pyxis-image/tests/mocks.sh`. This file will contain the mock function
     definitions. It also needs to contain a shebang at the top as it will get injected to the top
     of the original script. For example:
 

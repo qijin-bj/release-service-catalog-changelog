@@ -12,8 +12,10 @@ spec:
       taskRef:
         name: filter-already-released-advisory-images-task
       params:
-        - name: snapshot_json
-          value: '{"components":[{"name":"released-component","version":"1.0.0","containerImage":"quay.io/test/released-image:1.0.0","tags":["v1.0"],"repository":"quay.io/test"},{"name":"new-component","version":"1.0.0","containerImage":"quay.io/test/new-image:1.0.0","tags":["v1.0"],"repository":"quay.io/test"}]}'
+        - name: snapshot
+          # Snapshot string before `gzip -c|base64 -w 0` encoding:
+          # '{"components":[{"name":"released-component","version":"1.0.0","containerImage":"quay.io/test/released-image:1.0.0","tags":["v1.0"],"repository":"quay.io/test"},{"name":"new-component","version":"1.0.0","containerImage":"quay.io/test/new-image:1.0.0","tags":["v1.0"],"repository":"quay.io/test"}]}'
+          value: 'H4sIAMbtXGgAA6WOMQ7CMAxFd47hOaRlzQ04A+pgFauyROySmKKq6t2bDGRghPU//f/fBqPGWYXEMoTbBoKRIECiB2Gm+7lhcLBQyqxS8MX3vi/JqGLIQukacaq95wtXz9oZZevaCFcaPiXDqX7BUgIYXPmaNbNpWr8GYHdNSOj9l0vt/6wx7KcDhTKALSkBAAA='
         - name: origin
           value: "test-origin"
         - name: advisory_secret_name
@@ -49,13 +51,14 @@ spec:
               fi
 
               # Verify unreleased components list
-              UNRELEASED_COUNT=$(jq 'length' <<< '$(params.unreleased_components)')
+              UNRELEASED_COMPONENTS=$(base64 -d <<< "$(params.unreleased_components)" | gunzip)
+              UNRELEASED_COUNT=$(jq 'length' <<< "$UNRELEASED_COMPONENTS")
               if [[ "$UNRELEASED_COUNT" -ne 1 ]]; then
                 echo "Expected 1 unreleased component, but found $UNRELEASED_COUNT"
                 exit 1
               fi
 
-              UNRELEASED_NAME=$(jq -r '.[0]' <<< '$(params.unreleased_components)')
+              UNRELEASED_NAME=$(jq -r '.[0]' <<< "$UNRELEASED_COMPONENTS")
               if [[ "$UNRELEASED_NAME" != "new-component" ]]; then
                 echo "Unexpected unreleased component name: $UNRELEASED_NAME"
                 exit 1

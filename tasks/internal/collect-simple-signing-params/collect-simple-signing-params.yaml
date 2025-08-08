@@ -3,11 +3,11 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: collect-simple-signing-params
-  labels:
-    app.kubernetes.io/version: "0.4.0"
   annotations:
     tekton.dev/tags: release
 spec:
+  description: |-
+    Task to collect parameters for the simple signing pipeline
   params:
     - name: config_map_name
       description: Name of a configmap with pipeline configuration

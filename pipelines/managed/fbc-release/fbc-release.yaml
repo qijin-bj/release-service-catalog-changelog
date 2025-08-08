@@ -3,13 +3,11 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: fbc-release
-  labels:
-    app.kubernetes.io/version: "4.7.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
+  description: |-
     Tekton release pipeline to interact with FBC Pipeline
   params:
     - name: release
@@ -37,10 +35,6 @@ spec:
         Extra rule data to be merged into the policy specified in params.enterpriseContractPolicy. Use syntax
         "key1=value1,key2=value2..."
       default: "pipeline_intention=release"
-    - name: enterpriseContractTimeout
-      type: string
-      description: Timeout setting for `ec validate`
-      default: 40m0s
     - name: verify_ec_task_bundle
       type: string
       description: The location of the bundle containing the verify-enterprise-contract task
@@ -58,6 +52,24 @@ spec:
       type: string
       description: Cleans up workspace after finishing executing the pipeline
       default: "true"
+    - name: ociStorage
+      type: string
+      description: The OCI repository where the Trusted Artifacts are stored
+      default: "quay.io/konflux-ci/release-service-trusted-artifacts"
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: ""
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable
+      type: string
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
+      # to avoid tar extraction errors, we need to specify a subdirectory
+      # inside the volume.
+      default: "/var/workdir/release"
   workspaces:
     - name: release-workspace
   results:
@@ -120,6 +132,12 @@ spec:
           value: $(params.snapshot)
         - name: subdirectory
           value: $(context.pipelineRun.uid)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
@@ -129,6 +147,44 @@ spec:
           workspace: release-workspace
       runAfter:
         - verify-access-to-resources
+    - name: collect-task-params
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/collect-task-params/collect-task-params.yaml
+      params:
+        - name: dataDir
+          value: "$(params.dataDir)"
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: keysToExtract
+          value: |
+            [
+              {"resultIndex": 0, "key": ".conforma.workerCount", "default": "4"},
+              {"resultIndex": 1, "key": ".conforma.timeout", "default": "8h0m0s"},
+              {"resultIndex": 2, "key": ".pyxis.secret"},
+              {"resultIndex": 3, "key": ".pyxis.server", "default": "production"}
+            ]
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - collect-data
     - name: check-data-keys
       params:
         - name: dataPath
@@ -136,9 +192,19 @@ spec:
         - name: schema
           value: $(params.taskGitUrl)/raw/$(params.taskGitRevision)/schema/dataKeys.json
         - name: systems
-          value:
-            - fbc
-            - sign
+          value: |
+            [
+              {"systemName": "fbc", "dynamic": false},
+              {"systemName": "sign", "dynamic": false}
+            ]
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
@@ -157,58 +223,42 @@ spec:
           workspace: release-workspace
       runAfter:
         - collect-data
-    - name: validate-single-component
+    - name: verify-conforma
+      timeout: "4h00m0s"
       taskRef:
         resolver: "git"
         params:
           - name: url
-            value: $(params.taskGitUrl)
+            value: https://github.com/enterprise-contract/ec-cli
           - name: revision
-            value: $(params.taskGitRevision)
+            value: "$(params.verify_ec_task_git_revision)"
           - name: pathInRepo
-            value: tasks/managed/validate-single-component/validate-single-component.yaml
+            value: "tasks/verify-conforma-konflux-ta/0.1/verify-conforma-konflux-ta.yaml"
       params:
-        - name: snapshotPath
+        - name: SNAPSHOT_FILENAME
           value: "$(tasks.collect-data.results.snapshotSpec)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - collect-data
-    - name: verify-enterprise-contract
-      taskRef:
-        resolver: "bundles"
-        params:
-          - name: bundle
-            value: $(params.verify_ec_task_bundle)
-          - name: kind
-            value: task
-          - name: name
-            value: verify-enterprise-contract
-      params:
-        - name: IMAGES
-          value: "$(workspaces.data.path)/$(tasks.collect-data.results.snapshotSpec)"
         - name: SSL_CERT_DIR
           value: /var/run/secrets/kubernetes.io/serviceaccount
         - name: POLICY_CONFIGURATION
           value: $(params.enterpriseContractPolicy)
         - name: STRICT
-          value: "1"
+          # only set to false for development
+          value: "true"
         - name: IGNORE_REKOR
           value: "true"
         - name: EXTRA_RULE_DATA
           value: $(params.enterpriseContractExtraRuleData)
         - name: TIMEOUT
-          value: $(params.enterpriseContractTimeout)
-      workspaces:
-        - name: data
-          workspace: release-workspace
+          value: "$(tasks.collect-task-params.results.extractedValues[1])"
+        - name: WORKERS
+          value: "$(tasks.collect-task-params.results.extractedValues[0])"
+        - name: SOURCE_DATA_ARTIFACT
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: TRUSTED_ARTIFACTS_DEBUG
+          value: "$(params.trustedArtifactsDebug)"
       runAfter:
-        - validate-single-component
+        - check-data-keys
+        - collect-task-params
     - name: get-ocp-version
       taskRef:
         resolver: "git"
@@ -222,11 +272,23 @@ spec:
       params:
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       workspaces:
         - name: data
           workspace: release-workspace
       runAfter:
-        - verify-enterprise-contract
+        - verify-conforma
     - name: update-ocp-tag
       workspaces:
         - name: data
@@ -245,6 +307,18 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: ocpVersion
           value: "$(tasks.get-ocp-version.results.stored-version)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       runAfter:
         - collect-data
         - get-ocp-version
@@ -266,6 +340,18 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.update-ocp-tag.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
       runAfter:
         - update-ocp-tag
     - name: check-fbc-packages
@@ -286,13 +372,23 @@ spec:
           value: "$(tasks.collect-data.results.data)"
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.update-ocp-tag.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
           value: "$(params.taskGitRevision)"
       runAfter:
-        - verify-enterprise-contract
+        - verify-conforma
+        - update-ocp-tag
     - name: add-fbc-contribution-to-index-image
+      retries: 3
       workspaces:
         - name: data
           workspace: release-workspace
@@ -318,13 +414,21 @@ spec:
           value: $(context.pipelineRun.uid)
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.prepare-fbc-release.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: $(params.taskGitUrl)
         - name: taskGitRevision
           value: $(params.taskGitRevision)
       runAfter:
         - check-fbc-packages
-        - verify-enterprise-contract
+        - verify-conforma
         - update-ocp-tag
         - collect-data
         - prepare-fbc-release
@@ -356,6 +460,7 @@ spec:
       runAfter:
         - verify-access-to-resources
     - name: sign-index-image
+      retries: 3
       workspaces:
         - name: data
           workspace: release-workspace
@@ -381,12 +486,24 @@ spec:
           value: $(tasks.extract-requester-from-release.results.output-result)
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.add-fbc-contribution-to-index-image.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: $(params.taskGitUrl)
         - name: taskGitRevision
           value: $(params.taskGitRevision)
         - name: fbcResultsPath
           value: "$(tasks.add-fbc-contribution-to-index-image.results.internalRequestResultsFile)"
+        - name: pyxisServer
+          value: $(tasks.collect-task-params.results.extractedValues[3])
+        - name: pyxisSecret
+          value: $(tasks.collect-task-params.results.extractedValues[2])
       when:
         - input: "$(tasks.add-fbc-contribution-to-index-image.results.mustSignIndexImage)"
           operator: in
@@ -394,6 +511,7 @@ spec:
       runAfter:
         - extract-requester-from-release
         - add-fbc-contribution-to-index-image
+        - collect-task-params
     - name: extract-index-image
       workspaces:
         - name: data
@@ -412,6 +530,22 @@ spec:
           value: $(tasks.add-fbc-contribution-to-index-image.results.requestResultsFile)
         - name: resultsDirPath
           value: "$(tasks.collect-data.results.resultsDir)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.add-fbc-contribution-to-index-image.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+        - name: internalRequestResultsFile
+          value: $(tasks.add-fbc-contribution-to-index-image.results.internalRequestResultsFile)
+      runAfter:
+        - add-fbc-contribution-to-index-image
     - name: publish-index-image
       workspaces:
         - name: data
@@ -428,16 +562,24 @@ spec:
       params:
         - name: dataPath
           value: "$(tasks.collect-data.results.data)"
-        - name: sourceIndex
-          value: $(tasks.extract-index-image.results.indexImageResolved)
         - name: targetIndex
           value: $(tasks.add-fbc-contribution-to-index-image.results.requestTargetIndex)
+        - name: internalRequestResultsFile
+          value: $(tasks.add-fbc-contribution-to-index-image.results.internalRequestResultsFile)
         - name: buildTimestamp
           value: $(tasks.add-fbc-contribution-to-index-image.results.buildTimestamp)
         - name: retries
           value: "3"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.sign-index-image.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: $(params.taskGitUrl)
         - name: taskGitRevision
@@ -448,12 +590,99 @@ spec:
           values: ["true"]
       runAfter:
         - sign-index-image
+    - name: collect-index-images
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/collect-index-images/collect-index-images.yaml
+      params:
+        - name: buildTimestamp
+          value: $(tasks.add-fbc-contribution-to-index-image.results.buildTimestamp)
+        - name: internalRequestResultsFile
+          value: $(tasks.add-fbc-contribution-to-index-image.results.internalRequestResultsFile)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.add-fbc-contribution-to-index-image.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - add-fbc-contribution-to-index-image
+    - name: create-pyxis-image
+      retries: 5
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/create-pyxis-image/create-pyxis-image.yaml
+      params:
+        - name: server
+          value: $(tasks.collect-task-params.results.extractedValues[3])
+        - name: pyxisSecret
+          value: $(tasks.collect-task-params.results.extractedValues[2])
+        - name: rhPush
+          value: "true"
+        - name: snapshotPath
+          value: "$(tasks.collect-index-images.results.indexImageSnapshot)"
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-index-images.results.sourceDataArtifact)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      when:
+        - input: $(tasks.add-fbc-contribution-to-index-image.results.mustPublishIndexImage)
+          operator: in
+          values: ["true"]
+      runAfter:
+        - collect-task-params
+        - collect-index-images
+        - publish-index-image
     - name: update-cr-status
       params:
         - name: resource
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: resultArtifacts
+          value:
+            - "$(tasks.add-fbc-contribution-to-index-image.results.sourceDataArtifact)=$(params.dataDir)"
+            - "$(tasks.extract-index-image.results.sourceDataArtifact)=$(params.dataDir)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
         - name: taskGitUrl
           value: "$(params.taskGitUrl)"
         - name: taskGitRevision
@@ -471,9 +700,9 @@ spec:
         - name: data
           workspace: release-workspace
       runAfter:
-        - publish-index-image
+        - extract-index-image
   finally:
-    - name: cleanup
+    - name: cleanup-internal-requests
       taskRef:
         resolver: "git"
         params:
@@ -482,16 +711,11 @@ spec:
           - name: revision
             value: $(params.taskGitRevision)
           - name: pathInRepo
-            value: tasks/managed/cleanup-workspace/cleanup-workspace.yaml
+            value: tasks/managed/cleanup-internal-requests/cleanup-internal-requests.yaml
       when:
         - input: $(params.postCleanUp)
           operator: in
           values: ["true"]
       params:
-        - name: subdirectory
-          value: "$(context.pipelineRun.uid)"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
-      workspaces:
-        - name: input
-          workspace: release-workspace

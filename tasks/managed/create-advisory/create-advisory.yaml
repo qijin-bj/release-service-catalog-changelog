@@ -3,14 +3,15 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: create-advisory
-  labels:
-    app.kubernetes.io/version: "7.0.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
-    Tekton task to create an advisory via an InternalRequest
+  description: |-
+    Tekton task to create an advisory via an InternalRequest. The advisory data is pulled from the data JSON. The origin
+    workspace from the ReleasePlanAdmission and Application from the Snapshot are also used. The advisory is created in
+    a GitLab repository. Which repository to use is determined by the contents on the mapped repositories.
+    Only all `redhat-pending` or all `redhat-prod` repositories may be specified in `.data.mapping`
   params:
     - name: jsonKey
       type: string
@@ -25,6 +26,10 @@ spec:
     - name: dataPath
       type: string
       description: Path to the data JSON in the data workspace
+    - name: environment
+      type: string
+      description: The environment for the advisory to be published. Options are stage and production
+      default: ""
     - name: resultsDirPath
       type: string
       description: Path to the results directory in the data workspace
@@ -40,16 +45,16 @@ spec:
       type: string
       description: The uid of the current pipelineRun. Used as a label value when creating internal requests
     - name: ociStorage
-      description: The OCI repository where the Trusted Artifacts are stored.
+      description: The OCI repository where the Trusted Artifacts are stored
       type: string
       default: "empty"
     - name: ociArtifactExpiresAfter
       description: Expiration date for the trusted artifacts created in the
-        OCI repository. An empty string means the artifacts do not expire.
+        OCI repository. An empty string means the artifacts do not expire
       type: string
       default: "1d"
     - name: trustedArtifactsDebug
-      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable
       type: string
       default: ""
     - name: orasOptions
@@ -106,8 +111,16 @@ spec:
         value: "$(params.orasOptions)"
       - name: "DEBUG"
         value: "$(params.trustedArtifactsDebug)"
+    securityContext:
+      runAsUser: 1001
   steps:
     - name: skip-trusted-artifact-operations
+      computeResources:
+        limits:
+          memory: 32Mi
+        requests:
+          memory: 32Mi
+          cpu: 20m
       ref:
         resolver: "git"
         params:
@@ -123,6 +136,12 @@ spec:
         - name: workDir
           value: $(params.dataDir)
     - name: use-trusted-artifact
+      computeResources:
+        limits:
+          memory: 64Mi
+        requests:
+          memory: 64Mi
+          cpu: 30m
       ref:
         resolver: "git"
         params:
@@ -139,6 +158,12 @@ spec:
           value: $(params.sourceDataArtifact)
     - name: update-purl
       image: quay.io/distribution_relengs/publish-to-dev-portal-test-image:purl
+      computeResources:
+        limits:
+          memory: 256Mi
+        requests:
+          memory: 256Mi
+          cpu: 100m
       env:
         - name: CGW_USERNAME
           valueFrom:
@@ -166,8 +191,14 @@ spec:
         content_type=$(jq -r '.mapping.components[]?.contentGateway?.contentType // empty' "$DATA_FILE" | head -n1)
 
         # If no contentType is found, then we are not dealing with a generic type and can skip this step
+        # But we will check if this is a github release for logging purposes
         if [ -z "$content_type" ]; then
-          echo "content type is not a generic artifact, skipping this"
+          github_field=$(jq -r '.github // empty' "$DATA_FILE")
+          if [[ -n "$github_field" ]]; then
+            echo "Github release. Skipping update-purl."
+            exit 0
+          fi
+          echo "content type is not a generic artifact, skipping update-purl"
           exit 0
         fi
 
@@ -243,6 +274,12 @@ spec:
         ' "$DATA_FILE" > /tmp/data.tmp && mv /tmp/data.tmp "$DATA_FILE"
     - name: run-script
       image: quay.io/konflux-ci/release-service-utils:0f82be4be43294b6a96846d87ef7f7c0b9e34267
+      computeResources:
+        limits:
+          memory: 512Mi
+        requests:
+          memory: 512Mi
+          cpu: 350m
       script: |
         #!/bin/bash
         set -ex
@@ -281,8 +318,15 @@ spec:
         DATA_FILE="$(params.dataDir)/$(params.dataPath)"
 
         content_type=$(jq -r '.mapping.components[]?.contentGateway?.contentType // empty' "$DATA_FILE" | head -n1)
+
+        # if no content type, check if this is a github release by looking for .github in data.json
         if [ -z "$content_type" ]; then
-          content_type="image"
+          github_field=$(jq -r '.github // empty' "$DATA_FILE")
+          if [[ -n "$github_field" ]]; then
+            content_type="generic"
+          else
+            content_type="image"
+          fi
         fi
 
         if [ "$content_type" = "binary" ] || [ "$content_type" = "generic" ]; then
@@ -318,59 +362,9 @@ spec:
         stagingErrataSecretName="errata-stage-service-account"
 
         if [ "$content_type" = "image" ]; then
-
-          #
-          # detect which one to use based on repositories specified
-          #
-          pending_repositories=$(jq -r '.components[] | select(.repository |
-            contains("quay.io/redhat-pending/")) |
-            .repository' "$(params.dataDir)/$(params.snapshotPath)")
-          prod_repositories=$(jq -r '.components[] | select(.repository | contains("quay.io/redhat-prod/")) |
-            .repository' "$(params.dataDir)/$(params.snapshotPath)")
-          orphan_repositories=$(jq -r '.components[] | select(.repository | contains("quay.io/redhat-prod/") |
-            not) | select(.repository | contains("quay.io/redhat-pending/") | not) |
-            .repository' "$(params.dataDir)/$(params.snapshotPath)")
-
-          foundPendingRepositories=false
-          if [ -n "${pending_repositories}" ]; then
-            foundPendingRepositories=true
-          fi
-
-          foundProdRepositories=false
-          if [ -n "${prod_repositories}" ]; then
-            foundProdRepositories=true
-          fi
-
-          foundOrphanRepositories=false
-          if [ -n "${orphan_repositories}" ]; then
-            foundOrphanRepositories=true
-          fi
-
-          echo "foundPendingRepositories: ${foundPendingRepositories}"
-          echo "foundProdRepositories: ${foundProdRepositories}"
-          echo "foundOrphanRepositories: ${foundOrphanRepositories}"
-
-          if [ "${foundPendingRepositories}" == "true" ] && [ "${foundProdRepositories}" == "true" ]; then
-            echo "Error: cannot publish to both redhat-pending and redhat-prod repositories"
-            exit 1
-          fi
-
-          if [ "${foundPendingRepositories}" == "false" ] && [ "${foundProdRepositories}" == "false" ]; then
-            echo "Error: you must publish to either redhat-pending or redhat-prod repositories"
-            exit 1
-          fi
-
-          if [ "${foundOrphanRepositories}" == "true" ]; then
-            echo "Error: you must publish to either redhat-pending or redhat-prod repositories"
-            exit 1
-          fi
-
-          # at this point, one of foundPendingRepositories or foundProdRepositories
-          # is true.
-
           advisorySecretName="${prodSecretName}"
           errataSecretName="${prodErrataSecretName}"
-          if [ "${foundPendingRepositories}" == "true" ]; then
+          if [ "$(params.environment)" == "stage" ]; then
             advisorySecretName="${stagingSecretName}"
             errataSecretName="${stagingErrataSecretName}"
           fi
@@ -379,7 +373,7 @@ spec:
           # is complete and stakeholders are ready to ingest these advisories
           prodSecretName="create-advisory-poc-secret"
           prodErrataSecretName="errata-stage-service-account"
-          stagingSecretName="create-advisory-poc-secret"
+          stagingSecretName="create-advisory-poc-stage-secret"
           stagingErrataSecretName="errata-stage-service-account"
 
           DATA_FILE="$(params.dataDir)/$(params.dataPath)"
@@ -397,11 +391,12 @@ spec:
         IR_FILE="$(params.dataDir)/$(context.task.name)/ir-result.txt"
         mkdir -p "$(dirname "$IR_FILE")"
 
+        advisoryDataCompressed=$(gzip <<< "${advisoryData}" | base64 -w0)
         echo "Creating InternalRequest to create advisory..."
         internal-request --pipeline "$(params.request)" \
                          -p application="${application}" \
                          -p origin="${origin}" \
-                         -p advisory_json="${advisoryData}" \
+                         -p advisory_json="${advisoryDataCompressed}" \
                          -p config_map_name="${configMapName}" \
                          -p contentType="${content_type}" \
                          -p advisory_secret_name="${advisorySecretName}" \
@@ -409,6 +404,8 @@ spec:
                          -p taskGitUrl="$(params.taskGitUrl)" \
                          -p taskGitRevision="$(params.taskGitRevision)" \
                          -s "$(params.synchronously)" \
+                         --pipeline-timeout "01h05m00s" \
+                         --task-timeout "01h00m00s" \
                          -l ${pipelinerun_label}="$(params.pipelineRunUid)" \
                          | tee "$IR_FILE" || \
                          (grep "^\[" "$IR_FILE" | jq . && exit 1)
@@ -439,6 +436,12 @@ spec:
         jq -n --arg url "$URL" --arg internal_url "$INTERNAL_URL" \
           '{"advisory": {"url": $url, "internal_url": $internal_url}}' | tee "$RESULTS_FILE"
     - name: create-trusted-artifact
+      computeResources:
+        limits:
+          memory: 128Mi
+        requests:
+          memory: 128Mi
+          cpu: 250m
       ref:
         resolver: "git"
         params:
@@ -456,6 +459,12 @@ spec:
         - name: sourceDataArtifact
           value: $(results.sourceDataArtifact.path)
     - name: patch-source-data-artifact-result
+      computeResources:
+        limits:
+          memory: 32Mi
+        requests:
+          memory: 32Mi
+          cpu: 20m
       ref:
         resolver: "git"
         params:

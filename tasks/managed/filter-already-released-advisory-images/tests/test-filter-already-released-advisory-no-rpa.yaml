@@ -50,7 +50,7 @@ spec:
               value: $(params.trustedArtifactsDebug)
         steps:
           - name: create-missing-rpa-inputs
-            image: quay.io/konflux-ci/release-service-utils:66e4e23bb327e5f8447b13bec8b13c7ff6a81999
+            image: quay.io/konflux-ci/release-service-utils:6a1df8c94948c3f1e83eb9e92a38a8e6431baa3b
             script: |
               #!/usr/bin/env bash
               set -eux
@@ -70,6 +70,9 @@ spec:
               }
               EOF
               # Note: No RPA file created
+              cat > "$(params.dataDir)/$(context.pipelineRun.uid)/data.json" <<EOF
+              {}
+              EOF
           - name: skip-trusted-artifact-operations
             ref:
               name: skip-trusted-artifact-operations
@@ -116,8 +119,6 @@ spec:
           value: "false"
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
-        - name: subdirectory
-          value: $(context.pipelineRun.uid)
         - name: taskGitUrl
           value: "http://localhost"
         - name: taskGitRevision
@@ -132,6 +133,8 @@ spec:
           value: "$(tasks.setup.results.sourceDataArtifact)=$(params.dataDir)/$(context.pipelineRun.uid)"
         - name: dataDir
           value: $(params.dataDir)
+        - name: dataPath
+          value: "$(context.pipelineRun.uid)/data.json"
       workspaces:
         - name: data
           workspace: tests-workspace

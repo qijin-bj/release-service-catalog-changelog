@@ -12,14 +12,8 @@ A task result is returned for each resource with the relative path to the stored
 
 | Name                   | Description                                                      | Optional | Default value |
 |------------------------|------------------------------------------------------------------|----------|---------------|
-| previousRelease        | Namespaced name of the previous Release                          | No       | -             |
-| release                | Namespaced name of the Release                                   | No       | -             |
-| collectorsResourceType | The type of resource that contains the collectors                | No       | -             |
+| previousRelease        | The namespaced name of the previous Release                      | No       | -             |
+| release                | The namespaced name of the Release                               | No       | -             |
+| collectorsResourceType | The type of resource that contains the collectors                | Yes      | releaseplan   |
 | collectorsResource     | The namespaced name of the resource that contains the collectors | No       | -             |
 | subdirectory           | Subdirectory inside the workspace to be used                     | Yes      | ""            |
-
-## Changes in 0.3.0
-* Handle the case where the previousRelease value is empty
-
-## Changes in 0.2.0
-* Stop passing releasePlan and releasePlanAdmission and pass instead a reference to a resource

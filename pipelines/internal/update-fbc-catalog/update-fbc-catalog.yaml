@@ -3,13 +3,11 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: update-fbc-catalog
-  labels:
-    app.kubernetes.io/version: "1.1.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: fbc
 spec:
-  description: >-
+  description: |-
     Tekton pipeline add/update FBC fragments to the FBC catalog by interacting with IIB service for File Based Catalogs
   params:
     - name: iibServiceAccountSecret

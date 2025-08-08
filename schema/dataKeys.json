@@ -5,25 +5,43 @@
     "systems": {
       "type": "array",
       "items": {
-        "type": "string",
-        "enum": [
-          "releaseNotes",
-          "cdn",
-          "fbc",
-          "sign",
-          "mrrc",
-          "github",
-          "contentGateway",
-          "pyxis",
-          "mapping"
-        ],
-        "description": "List of systems that are supported to be required in the data"
-      },
-      "requestType": {
-        "type": "string",
-        "description": "The request type to be used when requesting internal workloads",
-        "enum": ["internal-request", "internal-pipelinerun"]
+        "type": "object",
+        "properties": {
+          "systemName": {
+            "type": "string",
+            "description": "The name of the system",
+            "enum": [
+              "releaseNotes",
+              "cdn",
+              "fbc",
+              "sign",
+              "mrrc",
+              "github",
+              "contentGateway",
+              "pyxis",
+              "mapping",
+              "ootsign",
+              "conforma"
+            ]
+          },
+          "dynamic": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, system is optional unless one of its fields are present in the data"
+          }
+        },
+        "required": [
+          "systemName"
+        ]
       }
+    },
+    "requestType": {
+      "type": "string",
+      "description": "The request type to be used when requesting internal workloads",
+      "enum": [
+        "internal-request",
+        "internal-pipelinerun"
+      ]
     },
     "fbc": {
       "type": "object",
@@ -132,8 +150,7 @@
         },
         "product_version": {
           "type": "string",
-          "description": "The product version e.g v1.0.0",
-          "pattern": "^fbc|(fbc[-]|[vV])?(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:\\.(?:0|[1-9]\\d*))?([-\\s]?([Aa]lpha|[Bb]eta|fast|tech[-\\s]preview)?)$"
+          "description": "The product version e.g v1.0.0"
         },
         "product_stream": {
           "type": "string",
@@ -145,7 +162,11 @@
         },
         "type": {
           "type": "string",
-          "enum": ["RHEA", "RHBA", "RHSA"],
+          "enum": [
+            "RHEA",
+            "RHBA",
+            "RHSA"
+          ],
           "description": "Type advisory type e.g. RHSA"
         },
         "synopsis": {
@@ -258,6 +279,30 @@
                   }
                 }
               }
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "component": {
+                    "type": "string",
+                    "description": "The component of the artifact e.g. adv-comp-1"
+                  },
+                  "architecture": {
+                    "type": "string",
+                    "description": "The architecture of the artifact e.g. amd64"
+                  },
+                  "os": {
+                    "type": "string",
+                    "description": "The operating system of the artifact e.g. linux"
+                  },
+                  "purl": {
+                    "type": "string",
+                    "description": "The package URL representing the artifact"
+                  }
+                }
+              }
             }
           }
         },
@@ -289,11 +334,6 @@
         "pipelineImage": {
           "type": "string",
           "description": "An image with CLI tools needed for the signing by the internal signing pipelines"
-        },
-        "requestType": {
-          "type": "string",
-          "description": "The request type to be used to request signing",
-          "enum": ["internal-request", "internal-pipelinerun"]
         }
       }
     },
@@ -303,6 +343,19 @@
         "githubSecret": {
           "type": "string",
           "description": "The secret used to authenticate GitHub via the the GitHub token"
+        }
+      }
+    },
+    "conforma": {
+      "type": "object",
+      "properties": {
+        "workerCount": {
+          "type": "integer",
+          "description": "The value to use as the WORKERS parameter in the verify-conforma task"
+        },
+        "timeout": {
+          "type": "string",
+          "description": "Timeout setting for `ec validate` in 8h0m0s format"
         }
       }
     },
@@ -428,45 +481,66 @@
                   }
                 }
               },
-              "contentGateway": {
-                "type": "object",
-                "properties": {
-                  "productName": {
-                    "type": "string",
-                    "description": "productName in content gateway"
-                  },
-                  "productCode": {
-                    "type": "string",
-                    "description": "productCode in content gateway"
-                  },
-                  "productVersionName": {
-                    "type": "string",
-                    "description": "productVersionName in content gateway"
-                  },
-                  "filePrefix": {
-                    "type": "string",
-                    "description": "filePrefix to use to select files to add to content gateway"
-                  },
-                  "mirrorOpenshiftPush": {
-                    "type": "boolean",
-                    "description": "whether or not to push to mirror.openshift.com"
-                  },
-                  "components": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "description": "The component name found in the snapshot e.g. example-component"
-                        },
-                        "description": {
-                          "type": "string",
-                          "description": "Description propogated to Content Gateway"
-                        }
-                      }
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "filename": {
+                      "type": "string",
+                      "description": "file basename"
+                    },
+                    "source": {
+                      "type": "string",
+                      "description": "full path to the file within image"
+                    },
+                    "arch": {
+                      "type": "string",
+                      "description": "Target architecture"
+                    },
+                    "os": {
+                      "type": "string",
+                      "description": "Target operating system"
                     }
                   }
+                }
+              }
+            },
+            "contentGateway": {
+              "type": "object",
+              "properties": {
+                "productName": {
+                  "type": "string",
+                  "description": "productName in content gateway"
+                },
+                "productCode": {
+                  "type": "string",
+                  "description": "productCode in content gateway"
+                },
+                "productVersionName": {
+                  "type": "string",
+                  "description": "productVersionName in content gateway"
+                },
+                "filePrefix": {
+                  "type": "string",
+                  "description": "filePrefix to use to select files to add to content gateway"
+                },
+                "mirrorOpenshiftPush": {
+                  "type": "boolean",
+                  "description": "whether or not to push to mirror.openshift.com"
+                },
+                "contentType": {
+                  "type": "string",
+                  "enum": [
+                    "disk-image",
+                    "binary",
+                    "generic"
+                  ],
+                  "description": "Specifies the type of content being published"
+                },
+                "sign": {
+                  "type": "boolean",
+                  "description": "Whether the artifact should be signed before publishing"
                 }
               },
               "productInfo": {
@@ -584,12 +658,61 @@
         }
       }
     },
+    "ootsign": {
+      "type": "object",
+      "properties": {
+        "kmodsPath": {
+          "type": "string",
+          "description": "Path where kmods are built inside the image"
+        },
+        "signedKmodsPath": {
+          "type": "string",
+          "description": "Directory where signed kmods will be in the internal repository"
+        },
+        "artifact-repo-url": {
+          "type": "string",
+          "description": "Repository URL where the signed oot kmods will be pushed"
+        },
+        "artifact-branch": {
+          "type": "string",
+          "description": "Branch where the signed oot kmods will be pushed"
+        },
+        "vendor": {
+          "type": "string",
+          "description": "Vendor name of the oot kmods"
+        },
+        "signing-secret": {
+          "type": "string",
+          "description": "Secret that includes signUser, signKey and signHost keys"
+        },
+        "signingAuthor": {
+          "type": "string",
+          "description": "The name of the author that rh-signing-client will set for --onbehalfof"
+        },
+        "artifact-repo-token": {
+          "type": "string",
+          "description": "Secret containing access token to push signed modules"
+        },
+        "checksumFingerprint": {
+          "type": "string",
+          "description": "Secret containing the host key database for SSH the server running signing"
+        },
+        "checksumKeytab": {
+          "type": "string",
+          "description": "Secret containing keytab file for the Kerberos user/server"
+        }
+      }
+    },
     "cdn": {
       "type": "object",
       "properties": {
         "env": {
           "type": "string",
-          "enum": ["qa", "stage", "production"],
+          "enum": [
+            "qa",
+            "stage",
+            "production"
+          ],
           "description": "The environment for the CDN configuration e.g. qa"
         }
       }
@@ -599,17 +722,42 @@
       "properties": {
         "release": {
           "type": "string",
-          "enum": ["ga", "ea"],
+          "enum": [
+            "ga",
+            "ea"
+          ],
           "description": "The release for the MRRC configuration e.g. ga"
         },
         "environment": {
           "type": "string",
-          "enum": ["dev", "stage", "production"],
+          "enum": [
+            "dev",
+            "stage",
+            "production"
+          ],
           "description": "The environment for the MRRC configuration e.g. dev"
         },
         "awsSecret": {
           "type": "string",
           "description": "The k8s secret containing the aws credential for MRRC aws access"
+        },
+        "sign": {
+          "type": "object",
+          "description": "The signing configuration through RADAS",
+          "properties": {
+            "signKey": {
+              "type": "string",
+              "description": "The signing key used to do signing"
+            },
+            "signCASecret": {
+              "type": "string",
+              "description": "The k8s secret containing ca files for radas access"
+            },
+            "signIgnores": {
+              "type": "array",
+              "description": "Patterns to filter the files which will not need to do signing"
+            }
+          }
         },
         "charonConfig": {
           "type": "string",
@@ -658,6 +806,10 @@
           "description": "The tekton runner for running push-rpm-to-koji tekton task"
         }
       }
+    },
+    "skipFilter": {
+      "type": "boolean",
+      "description": "If true, skip filtering of already-released images and process all components in the snapshot. Default: false."
     }
   },
   "allOf": [
@@ -666,13 +818,46 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "releaseNotes"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "releaseNotes"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["releaseNotes"],
+        "required": [
+          "releaseNotes"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "releaseNotes"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "releaseNotes"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "releaseNotes": {
             "required": [
@@ -689,7 +874,52 @@
             ],
             "properties": {
               "content": {
-                "required": ["images"]
+                "oneOf": [
+                  {
+                    "required": [
+                      "images"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "artifacts"
+                    ]
+                  }
+                ]
+              },
+              "cves": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "key",
+                        "component"
+                      ]
+                    },
+                    {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "key"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "component"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "packages"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
               }
             }
           }
@@ -701,16 +931,51 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "cdn"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "cdn"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["cdn"],
+        "required": [
+          "cdn"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cdn"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "cdn"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "cdn": {
-            "required": ["env"]
+            "required": [
+              "env"
+            ]
           }
         }
       }
@@ -720,13 +985,34 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "fbc"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "fbc"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["fbc"],
+        "required": [
+          "fbc"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "fbc"
+        ]
+      },
+      "then": {
         "properties": {
           "fbc": {
             "required": [
@@ -740,69 +1026,110 @@
     },
     {
       "if": {
+        "required": [
+          "fbc"
+        ],
         "properties": {
           "systems": {
             "contains": {
-              "const": "fbc"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "fbc"
+                }
+              }
             }
           },
           "fbc": {
             "properties": {
               "preGA": {
-                "enum": [true]
+                "enum": [
+                  true
+                ]
               }
             },
-            "required": ["preGA"]
+            "required": [
+              "preGA"
+            ]
           }
         }
       },
       "then": {
         "properties": {
           "fbc": {
-            "required": ["targetIndex", "productName", "productVersion"]
+            "required": [
+              "targetIndex",
+              "productName",
+              "productVersion"
+            ]
           }
         }
       }
     },
     {
       "if": {
+        "required": [
+          "fbc"
+        ],
         "properties": {
           "systems": {
             "contains": {
-              "const": "fbc"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "fbc"
+                }
+              }
             }
           },
           "fbc": {
             "properties": {
               "hotfix": {
-                "enum": [true]
+                "enum": [
+                  true
+                ]
               }
             },
-            "required": ["hotfix"]
+            "required": [
+              "hotfix"
+            ]
           }
         }
       },
       "then": {
         "properties": {
           "fbc": {
-            "required": ["targetIndex", "issueId"]
+            "required": [
+              "targetIndex",
+              "issueId"
+            ]
           }
         }
       }
     },
     {
       "if": {
+        "required": [
+          "fbc"
+        ],
         "properties": {
           "systems": {
             "contains": {
-              "const": "fbc"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "fbc"
+                }
+              }
             }
           },
           "fbc": {
             "properties": {
               "stagedIndex": {
                 "not": {
-                  "enum": [true]
+                  "enum": [
+                    true
+                  ]
                 }
               }
             }
@@ -812,7 +1139,9 @@
       "then": {
         "properties": {
           "fbc": {
-            "required": ["targetIndex"]
+            "required": [
+              "targetIndex"
+            ]
           }
         }
       }
@@ -822,16 +1151,51 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "sign"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "sign"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["sign"],
+        "required": [
+          "sign"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "sign"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "sign"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "sign": {
-            "required": ["configMapName"]
+            "required": [
+              "configMapName"
+            ]
           }
         }
       }
@@ -841,19 +1205,69 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "mrrc"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "mrrc"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["mrrc"],
+        "required": [
+          "mrrc"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "mrrc"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "mrrc"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "mrrc": {
-            "required": ["environment", "release", "awsSecret", "charonConfig"]
+            "required": [
+              "environment",
+              "release",
+              "awsSecret",
+              "charonConfig",
+              "signing"
+            ],
+            "properties": {
+              "signing": {
+                "required": [
+                  "signKey",
+                  "signCASecret"
+                ]
+              }
+            }
           },
           "releaseNotes": {
-            "required": ["product_name", "product_version"]
+            "required": [
+              "product_name",
+              "product_version"
+            ]
           }
         }
       }
@@ -863,16 +1277,51 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "github"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "github"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["github"],
+        "required": [
+          "github"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "github"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "github"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "github": {
-            "required": ["githubSecret"]
+            "required": [
+              "githubSecret"
+            ]
           }
         }
       }
@@ -882,7 +1331,73 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "contentGateway"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "contentGateway"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "mapping"
+        ],
+        "properties": {
+          "mapping": {
+            "required": [
+              "components"
+            ],
+            "properties": {
+              "components": {
+                "type": "array",
+                "items": {
+                  "required": [
+                    "contentGateway"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "mapping"
+        ],
+        "properties": {
+          "mapping": {
+            "required": [
+              "components"
+            ],
+            "properties": {
+              "components": {
+                "type": "array",
+                "items": {
+                  "required": [
+                    "contentGateway"
+                  ]
+                }
+              }
+            }
+          },
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "contentGateway"
+                }
+              }
             }
           }
         }
@@ -899,16 +1414,8 @@
                         "productName",
                         "productCode",
                         "productVersionName",
-                        "mirrorOpenshiftPush",
-                        "components"
-                      ],
-                      "properties": {
-                        "components": {
-                          "items": {
-                            "required": ["name", "description"]
-                          }
-                        }
-                      }
+                        "contentType"
+                      ]
                     }
                   }
                 }
@@ -923,16 +1430,52 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "pyxis"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "pyxis"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
             }
           }
         }
       },
       "then": {
-        "required": ["pyxis"],
+        "required": [
+          "pyxis"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "pyxis"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "pyxis"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
         "properties": {
           "pyxis": {
-            "required": ["server", "secret"]
+            "required": [
+              "server",
+              "secret"
+            ]
           }
         }
       }
@@ -942,7 +1485,112 @@
         "properties": {
           "systems": {
             "contains": {
-              "const": "mapping"
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "ootsign"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ootsign"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ootsign"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "ootsign"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ootsign": {
+            "required": [
+              "kmodsPath",
+              "signedKmodsPath",
+              "artifact-repo-url",
+              "artifact-repo-token",
+              "artifact-branch",
+              "vendor",
+              "signing-secret",
+              "signingAuthor",
+              "checksumFingerprint",
+              "checksumKeytab"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "mapping"
+                },
+                "dynamic": {
+                  "not": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "mapping"
+        ],
+        "properties": {
+          "mapping": {
+            "type": "object",
+            "required": [
+              "components"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "mapping"
+        ],
+        "properties": {
+          "systems": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "systemName": {
+                  "const": "mapping"
+                }
+              }
             }
           }
         }
@@ -952,8 +1600,13 @@
           "mapping": {
             "properties": {
               "components": {
+                "type": "array",
+                "minItems": 1,
                 "items": {
-                  "required": ["name", "repository"]
+                  "required": [
+                    "name",
+                    "repository"
+                  ]
                 }
               }
             }

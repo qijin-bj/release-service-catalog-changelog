@@ -3,18 +3,17 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: get-advisory-severity
-  labels:
-    app.kubernetes.io/version: "0.1.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
-      Pipeline to fetch the proper severity for an advisory
+  description: |-
+    Tekton pipeline to execute the get-advisory-severity task. The goal of the task is to fetch the proper severity
+    for an advisory.
   params:
     - name: releaseNotesImages
       type: string
-      description: Json array of image specific details for the advisory
+      description: Base64 string of gzipped JSON array of image specific details for the advisory
     - name: taskGitUrl
       type: string
       description: The url to the git repo where the release-service-catalog tasks to be used are stored

@@ -8,21 +8,62 @@ spec:
     Test the push-rpm-to-koji task.
   workspaces:
     - name: tests-workspace
+  params:
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifacts created in the
+        OCI repository. An empty string means the artifacts do not expire.
+      type: string
+      default: "1d"
+    - name: orasOptions
+      description: oras options to pass to Trusted Artifacts calls
+      type: string
+      default: "--insecure"
+    - name: trustedArtifactsDebug
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      type: string
+      default: ""
+    - name: dataDir
+      description: The location where data will be stored
+      type: string
   tasks:
     - name: setup
       workspaces:
         - name: data
           workspace: tests-workspace
       taskSpec:
+        results:
+          - name: sourceDataArtifact
+            type: string
         workspaces:
           - name: data
+        volumes:
+          - name: workdir
+            emptyDir: {}
+        stepTemplate:
+          volumeMounts:
+            - mountPath: /var/workdir
+              name: workdir
+          env:
+            - name: IMAGE_EXPIRES_AFTER
+              value: $(params.ociArtifactExpiresAfter)
+            - name: "ORAS_OPTIONS"
+              value: "$(params.orasOptions)"
+            - name: "DEBUG"
+              value: "$(params.trustedArtifactsDebug)"
+          # Use the same security context as the main task to avoid permission issues
+          securityContext:
+            runAsUser: 1001
         steps:
           - name: setup-values
             image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
             script: |
               set -eux
 
-              cat > "$(workspaces.data.path)"/data.json << EOF
+              mkdir -p "$(params.dataDir)/$(context.pipelineRun.uid)"
+              cat > "$(params.dataDir)/$(context.pipelineRun.uid)/data.json" << EOF
               {
                 "mapping": {
                   "components": [
@@ -53,7 +94,7 @@ spec:
                 }
               }
               EOF
-              cat > "$(workspaces.data.path)"/snapshot_spec.json << EOF
+              cat > "$(params.dataDir)/$(context.pipelineRun.uid)/snapshot_spec.json" << EOF
               {
                 "application": "rpms",
                 "artifacts": {},
@@ -95,20 +136,58 @@ spec:
                 ]
               }
               EOF
+          - name: skip-trusted-artifact-operations
+            ref:
+              name: skip-trusted-artifact-operations
+            params:
+              - name: ociStorage
+                value: $(params.ociStorage)
+              - name: workDir
+                value: $(params.dataDir)
+          - name: create-trusted-artifact
+            ref:
+              name: create-trusted-artifact
+            params:
+              - name: ociStorage
+                value: $(params.ociStorage)
+              - name: workDir
+                value: $(params.dataDir)
+              - name: sourceDataArtifact
+                value: $(results.sourceDataArtifact.path)
+          - name: patch-source-data-artifact-result
+            ref:
+              name: patch-source-data-artifact-result
+            params:
+              - name: ociStorage
+                value: $(params.ociStorage)
+              - name: sourceDataArtifact
+                value: $(results.sourceDataArtifact.path)
     - name: run-task
       taskRef:
         name: push-rpm-to-koji
       params:
         - name: snapshotPath
-          value: "snapshot_spec.json"
+          value: "$(context.pipelineRun.uid)/snapshot_spec.json"
         - name: dataPath
-          value: "data.json"
+          value: "$(context.pipelineRun.uid)/data.json"
         - name: pushSecret
           value: "push-koji-test"
-        - name: subdirectory
-          value: "./"
         - name: pipelineImage
           value: "quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: orasOptions
+          value: $(params.orasOptions)
+        - name: sourceDataArtifact
+          value: "$(tasks.setup.results.sourceDataArtifact)=$(params.dataDir)"
+        - name: dataDir
+          value: $(params.dataDir)
+        - name: trustedArtifactsDebug
+          value: $(params.trustedArtifactsDebug)
+        - name: taskGitUrl
+          value: "http://localhost"
+        - name: taskGitRevision
+          value: "main"
       workspaces:
         - name: data
           workspace: tests-workspace
@@ -119,15 +198,57 @@ spec:
       workspaces:
         - name: data
           workspace: tests-workspace
+      params:
+        - name: sourceDataArtifact
+          value: "$(tasks.run-task.results.sourceDataArtifact)=$(params.dataDir)"
+        - name: dataDir
+          value: $(params.dataDir)
       runAfter:
         - run-task
       taskSpec:
+        params:
+          - name: sourceDataArtifact
+            type: string
+          - name: dataDir
+            type: string
         workspaces:
           - name: data
+        volumes:
+          - name: workdir
+            emptyDir: {}
+        stepTemplate:
+          volumeMounts:
+            - mountPath: /var/workdir
+              name: workdir
+          env:
+            - name: IMAGE_EXPIRES_AFTER
+              value: $(params.ociArtifactExpiresAfter)
+            - name: "ORAS_OPTIONS"
+              value: "$(params.orasOptions)"
+            - name: "DEBUG"
+              value: "$(params.trustedArtifactsDebug)"
+          # Use the same security context as the main task to avoid permission issues
+          securityContext:
+            runAsUser: 1001
         steps:
+          - name: skip-trusted-artifact-operations
+            ref:
+              name: skip-trusted-artifact-operations
+            params:
+              - name: ociStorage
+                value: $(params.ociStorage)
+              - name: workDir
+                value: $(params.dataDir)
+          - name: use-trusted-artifact
+            ref:
+              name: use-trusted-artifact
+            params:
+              - name: workDir
+                value: $(params.dataDir)
+              - name: sourceDataArtifact
+                value: $(params.sourceDataArtifact)
           - name: check-result
             image: quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
-            workingDir: $(workspaces.data.path)
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
@@ -135,7 +256,7 @@ spec:
               exit_code=0
 
               function assert_cmd_called_with() {
-                  calls_file="$(workspaces.data.path)/${1}_calls.txt"
+                  calls_file="$(params.dataDir)/${1}_calls.txt"
                   if ! grep -q "^$*$" "$calls_file"; then
                       echo "Command call not found:"
                       echo "  $*"
@@ -148,7 +269,7 @@ spec:
               function assert_cmd_calls_count() {
                   expected_count=$1
                   shift
-                  calls_file="$(workspaces.data.path)/${1}_calls.txt"
+                  calls_file="$(params.dataDir)/${1}_calls.txt"
                   actual_count=$(grep -c "^$*" "$calls_file")
                   if [[ "$expected_count" != "$actual_count" ]]; then
                       echo "Expected $expected_count calls, but the actual number is $actual_count"
@@ -157,6 +278,27 @@ spec:
                       echo "Non-matching calls:"
                       grep --invert-match "^$*" "$calls_file" | sed 's/^/  /'
                       return 1
+                  fi
+              }
+
+              function test_init_build() {
+                  import_build_data=$(jq --compact-output <<EOD
+                      {
+                        "name": "libecpg",
+                        "version": "16.1",
+                        "release": "10.el10_0",
+                        "epoch": null,
+                        "draft": true
+                      }
+              EOD
+                  )
+                  if assert_cmd_called_with koji --profile=koji call --json CGInitBuild \
+                        '"konflux"' "$import_build_data"
+                  then
+                      echo "TEST PASSED: Koji build was initialized properly."
+                  else
+                      echo "TEST FAILED: Koji build was not initialized properly."
+                      exit_code=1
                   fi
               }
 
@@ -183,7 +325,7 @@ spec:
 
               function test_oras_pull() {
                   image=$1
-                  if assert_cmd_called_with oras pull "$image"; then
+                  if assert_cmd_called_with oras pull --registry-config /tmp/foobar "$image"; then
                       echo "TEST PASSED: Image was pulled: $image"
                   else
                       echo "TEST FAILED: Image was not pulled: $image"
@@ -211,6 +353,7 @@ spec:
                   fi
               }
 
+              test_init_build
               test_import
               test_tag test-rpm
               test_tag mock-target-draft

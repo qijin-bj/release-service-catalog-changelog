@@ -8,6 +8,11 @@ log_error() {
     exit "${2:-1}" # Exit with provided code or 1 by default
 }
 
+# Helper function to log errors
+log_warning() {
+    echo "⚠️ Warning: $1"
+}
+
 # Function to check for required environment variables
 check_env_vars() {
     echo "Checking required environment variables..."
@@ -19,6 +24,7 @@ check_env_vars() {
         ["RELEASE_CATALOG_GIT_REVISION"]="Missing RELEASE_CATALOG_GIT_REVISION"
     )
 
+    # Check core required variables
     for var_name in "${!required_vars[@]}"; do
         if [ -z "${!var_name}" ]; then
             echo "❌ error: ${required_vars[$var_name]}"
@@ -26,6 +32,35 @@ check_env_vars() {
         fi
     done
 
+    # Check variables from test.env files (static list of all variables found in test.env files)
+    echo "Checking test environment variables..."
+    local -a test_env_vars=(
+        "application_name"
+        "component_github_org"
+        "appstudio_component_branch"
+        "component_base_repo_name"
+        "component_base_branch"
+        "component_branch"
+        "component_git_url"
+        "component_name"
+        "component_repo_name"
+        "component_type"
+        "managed_namespace"
+        "managed_sa_name"
+        "originating_tool"
+        "tenant_namespace"
+    )
+    for var_name in "${test_env_vars[@]}"; do
+        # Check if variable is set
+        if [ -z "${!var_name}" ]; then
+            echo "❌ error: Missing test environment variable: $var_name"
+            missing_vars=$((missing_vars + 1))
+        else
+            echo "✅ $var_name is set"
+        fi
+    done
+
+    # Special file validation
     if [ -n "$VAULT_PASSWORD_FILE" ] && [ ! -f "$VAULT_PASSWORD_FILE" ]; then
         echo "❌ error: env var VAULT_PASSWORD_FILE points to a non-existent file: $VAULT_PASSWORD_FILE"
         missing_vars=$((missing_vars + 1))
@@ -38,7 +73,7 @@ check_env_vars() {
     if [ -n "$KUBECONFIG" ] ; then
       echo "Using provided KUBECONFIG"
     else
-      echo "⚠️ Warning: KUBECONFIG is not set. Assuming kubectl is configured correctly."
+      log_warning "KUBECONFIG is not set. Assuming kubectl is configured correctly."
     fi
     echo "Environment variable check complete."
 }
@@ -92,7 +127,7 @@ get_build_pipeline_run_url() { # args are ns, app, name
   console_url=${console_url%/}
 
   if [ -z "$console_url" ]; then
-      echo "⚠️ Warning: Could not retrieve custom-console-url. URL might be incomplete."
+      log_warning "Could not retrieve custom-console-url. URL might be incomplete."
       echo "kubectl get cm/pipelines-as-code -n openshift-pipelines -ojson" # Add command for easier debugging
       echo "${ns}/applications/${app}/pipelineruns/${name}" # Fallback or partial URL
   else
@@ -101,7 +136,7 @@ get_build_pipeline_run_url() { # args are ns, app, name
 }
 
 # Function for cleaning up resources
-# Relies on global variables: CLEANUP, SCRIPT_DIR, component_repo_name, component_branch, tmpDir, advisory_yaml_dir
+# Relies on global variables: CLEANUP, SUITE_DIR, component_repo_name, component_branch, tmpDir, advisory_yaml_dir
 cleanup_resources() {
   local err=${1:-0} # Default to 0 if no error code passed
   local line=${2:-"N/A"}
@@ -121,10 +156,8 @@ cleanup_resources() {
     echo "Cleanup log file: ${cleanup_log_file}"
     echo -e "\n--- Cleanup Log ---" > "${cleanup_log_file}"
 
-    echo "Deleting Github branch ${component_branch} and PR branch konflux-${component_branch} for repo ${component_repo_name}..." >> "${cleanup_log_file}"
-    # Ensure SCRIPT_DIR is available
-    "${SCRIPT_DIR}/../scripts/delete-single-branch.sh" "${component_repo_name}" "${component_branch}" >> "${cleanup_log_file}" 2>&1
-    "${SCRIPT_DIR}/../scripts/delete-single-branch.sh" "${component_repo_name}" "konflux-${component_branch}" >> "${cleanup_log_file}" 2>&1
+    echo "Deleting Github repository ${component_repo_name} ..." >> "${cleanup_log_file}"
+    "${SUITE_DIR}/../scripts/delete-repository.sh" "${component_repo_name}"
 
     if [ -n "$tmpDir" ] && [ -d "$tmpDir" ]; then
         echo "Deleting test resources..." | tee -a "${cleanup_log_file}"
@@ -147,43 +180,43 @@ cleanup_resources() {
     echo "Skipping cleanup as per --skip-cleanup flag."
   fi
 
+  echo "Killing any child processes..." >> "${cleanup_log_file}"
+  pkill -e  -P $$
+
   if [ "$err" -ne 0 ]; then
     exit "$err"
   fi
 }
 
 # Function to decrypt secrets if they don't exist
-# Relies on global variables: SCRIPT_DIR, VAULT_PASSWORD_FILE
+# Relies on global variables: SUITE_DIR, VAULT_PASSWORD_FILE
 decrypt_secrets() {
     echo "Checking and decrypting secrets..."
-    mkdir -p "${SCRIPT_DIR}/resources/tenant/secrets"
-    mkdir -p "${SCRIPT_DIR}/resources/managed/secrets"
+    mkdir -p "${SUITE_DIR}/resources/tenant/secrets"
+    mkdir -p "${SUITE_DIR}/resources/managed/secrets"
 
-    local tenant_secrets_file="${SCRIPT_DIR}/resources/tenant/secrets/tenant-secrets.yaml"
-    local managed_secrets_file="${SCRIPT_DIR}/resources/managed/secrets/managed-secrets.yaml"
+    local tenant_secrets_file="${SUITE_DIR}/resources/tenant/secrets/tenant-secrets.yaml"
+    local managed_secrets_file="${SUITE_DIR}/resources/managed/secrets/managed-secrets.yaml"
 
     if [ ! -f "${tenant_secrets_file}" ]; then
-      echo "Tenant secrets missing...decrypting ${SCRIPT_DIR}/vault/tenant-secrets.yaml"
-      ansible-vault decrypt "${SCRIPT_DIR}/vault/tenant-secrets.yaml" --output "${tenant_secrets_file}" --vault-password-file "$VAULT_PASSWORD_FILE"
+      echo "Tenant secrets missing...decrypting ${SUITE_DIR}/vault/tenant-secrets.yaml"
+      ansible-vault decrypt "${SUITE_DIR}/vault/tenant-secrets.yaml" --output "${tenant_secrets_file}" --vault-password-file "$VAULT_PASSWORD_FILE"
     else
       echo "Tenant secrets already exist."
     fi
 
     if [ ! -f "${managed_secrets_file}" ]; then
-      echo "Managed secrets missing...decrypting ${SCRIPT_DIR}/vault/managed-secrets.yaml"
-      ansible-vault decrypt "${SCRIPT_DIR}/vault/managed-secrets.yaml" --output "${managed_secrets_file}" --vault-password-file "$VAULT_PASSWORD_FILE"
+      echo "Managed secrets missing...decrypting ${SUITE_DIR}/vault/managed-secrets.yaml"
+      ansible-vault decrypt "${SUITE_DIR}/vault/managed-secrets.yaml" --output "${managed_secrets_file}" --vault-password-file "$VAULT_PASSWORD_FILE"
     else
       echo "Managed secrets already exist."
     fi
     echo "Secret decryption check complete."
 }
 
-# Function to create GitHub branch
-# Relies on global variables: SCRIPT_DIR, component_branch, component_base_branch, component_repo_name
-create_github_branch() {
-    echo "Creating component branch ${component_branch} from ${component_base_branch} in repo ${component_repo_name}..."
-    "${SCRIPT_DIR}/../scripts/create-branch-from-base.sh" "${component_repo_name}" "${component_base_branch}" "${component_branch}"
-    echo "Branch creation initiated."
+create_github_repository() {
+    echo "Creating component repository ${component_repo_name} branch ${component_branch} from ${component_base_repo_name} branch ${component_base_branch}"
+    "${SUITE_DIR}/../scripts/copy-branch-to-repo-git.sh" "${component_base_repo_name}" "${component_base_branch}" "${component_repo_name}" "${component_branch}"
 }
 
 # Function to set up Kubernetes namespaces
@@ -209,19 +242,21 @@ setup_namespaces() {
 
 # Function to create Kubernetes resources
 # Modifies global variable: tmpDir
-# Relies on global variables: SCRIPT_DIR
+# Relies on global variables: SUITE_DIR
 create_kubernetes_resources() {
     echo "Creating Kubernetes resources..."
     # tmpDir is made global by not declaring it local
     tmpDir=$(mktemp -d)
     echo "Temporary directory for resources: ${tmpDir}"
 
+    timestamp=$(date +%Y%m%d-%H%M%S)
+
     echo "Building and applying tenant resources..."
-    kustomize build "${SCRIPT_DIR}/resources/tenant" | envsubst > "$tmpDir/tenant-resources.yaml"
+    kustomize build "${SUITE_DIR}/resources/tenant" | envsubst > "$tmpDir/tenant-resources.yaml"
     kubectl create -f "$tmpDir/tenant-resources.yaml"
 
     echo "Building and applying managed resources..."
-    kustomize build "${SCRIPT_DIR}/resources/managed" | envsubst > "$tmpDir/managed-resources.yaml"
+    kustomize build "${SUITE_DIR}/resources/managed" | envsubst > "$tmpDir/managed-resources.yaml"
     kubectl create -f "$tmpDir/managed-resources.yaml"
 
     echo "Kubernetes resources applied."
@@ -234,21 +269,52 @@ create_kubernetes_resources() {
 # Modifies global variables: component_pr, pr_number
 # Relies on global variables: component_name, tenant_namespace
 wait_for_component_initialization() {
-    echo -n "Waiting for component ${component_name} in namespace ${tenant_namespace} to be initialized: "
+    echo "Waiting for component ${component_name} in namespace ${tenant_namespace} to be initialized..."
+
+    local max_attempts=60  # 10 minutes with 10-second intervals
+    local attempt=1
     local component_annotations=""
-    while [ -z "${component_annotations}" ]; do
-      sleep 1
-      echo -n "."
+    local initialization_success=false
+
+    while [ $attempt -le $max_attempts ]; do
+      echo "Initialization check attempt ${attempt}/${max_attempts}..."
+
+      # Try to get component annotations
       component_annotations=$(kubectl get component/"${component_name}" -n "${tenant_namespace}" -ojson 2>/dev/null | \
         jq -r --arg k "build.appstudio.openshift.io/status" '.metadata.annotations[$k] // ""')
-    done
-    echo ""
-    echo "️✅️ Initialized."
 
-    # component_pr is made global by not declaring it local
-    component_pr=$(jq -r '.pac."merge-url" // ""' <<< "${component_annotations}")
-    if [ -z "${component_pr}" ]; then
-      log_error "Could not get component PR from annotations: ${component_annotations}"
+      if [ -n "${component_annotations}" ]; then
+        # component_pr is made global by not declaring it local
+        component_pr=$(jq -r '.pac."merge-url" // ""' <<< "${component_annotations}")
+        if [ -n "${component_pr}" ]; then
+            echo "✅ Component initialized successfully"
+            initialization_success=true
+            break
+        else
+            log_warning "Could not get component PR from annotations: ${component_annotations}"
+            echo "Waiting 10 seconds before retry..."
+            sleep 10
+        fi
+
+      else
+        log_warning "Component not yet initialized (attempt ${attempt}/${max_attempts})"
+
+        # Wait before retrying (except on the last attempt)
+        if [ $attempt -lt $max_attempts ]; then
+          echo "Waiting 10 seconds before retry..."
+          sleep 10
+        fi
+      fi
+
+      attempt=$((attempt + 1))
+    done
+
+    # Check if initialization ultimately succeeded
+    if [ "$initialization_success" = false ]; then
+      echo "🔴 error: component ${component_name} failed to initialize after ${max_attempts} attempts ($(($max_attempts * 10 / 60)) minutes)"
+      echo "   - Component may not exist in namespace ${tenant_namespace}"
+      echo "   - Component creation may have failed"
+      exit 1
     fi
 
     # pr_number is made global by not declaring it local
@@ -274,16 +340,41 @@ merge_github_pr() {
     echo "Commit message: \"${commit_message}\""
 
     local merge_result
-    merge_result=$(curl -L \
-      -X PUT \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer $GITHUB_TOKEN" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "https://api.github.com/repos/${component_repo_name}/pulls/${pr_number}/merge" \
-      -d "{\"commit_title\":\"e2e test\",\"commit_message\":\"${commit_message}\"}" --silent --show-error --fail-with-body)
+    local attempt=1
+    local max_attempts=3
+    local success=false
 
-    if [ $? -ne 0 ]; then
-        log_error "Failed to merge PR. Response: ${merge_result}"
+    # Retry loop for PR merge
+    while [ $attempt -le $max_attempts ] && [ "$success" = false ]; do
+        echo "Merge attempt ${attempt}/${max_attempts}..."
+
+        set +e
+        merge_result=$(curl -L \
+          -X PUT \
+          -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer $GITHUB_TOKEN" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "https://api.github.com/repos/${component_repo_name}/pulls/${pr_number}/merge" \
+          -d "{\"commit_title\":\"e2e test\",\"commit_message\":\"${commit_message}\"}" --silent --show-error --fail-with-body)
+
+        if [ $? -eq 0 ]; then
+            success=true
+            echo "✅ PR merge succeeded on attempt ${attempt}"
+        else
+            echo "❌ PR merge failed on attempt ${attempt}. Response: ${merge_result}"
+            if [ $attempt -lt $max_attempts ]; then
+                echo "Waiting 5 seconds before retry..."
+                sleep 5
+            fi
+        fi
+        set -e
+        
+        attempt=$((attempt + 1))
+    done
+
+    # Check if all attempts failed
+    if [ "$success" = false ]; then
+        log_error "Failed to merge PR after ${max_attempts} attempts. Last response: ${merge_result}"
     fi
 
     # SHA is made global by not declaring it local
@@ -294,87 +385,199 @@ merge_github_pr() {
     echo "PR merged. Commit SHA: ${SHA}"
 }
 
-# Function to wait for Component push PipelineRun to appear
-# Modifies global variable: component_push_plr_name
-# Relies on global variables: SHA, tenant_namespace, application_name
+# Function to wait for a PipelineRun to appear
+# Sets global variable: component_push_plr_name
 wait_for_plr_to_appear() {
-    echo -n "Waiting for Component push PLR to appear for SHA ${SHA} in namespace ${tenant_namespace}: "
-    # component_push_plr_name is made global by not declaring it local
+    local timeout=300  # 5 minutes timeout
+    local start_time=$(date +%s)
+    local current_time
+    local elapsed_time
+
+    echo -n "Waiting for PipelineRun to appear"
     component_push_plr_name=""
-    while [ -z "${component_push_plr_name}" ]; do
-      sleep 1
-      echo -n "."
-      component_push_plr_name=$(kubectl get pr -l "pipelinesascode.tekton.dev/sha=$SHA" -n "${tenant_namespace}" --no-headers 2>/dev/null | awk '{print $1}')
+    while [ -z "$component_push_plr_name" ]; do
+        current_time=$(date +%s)
+        elapsed_time=$((current_time - start_time))
+
+        if [ $elapsed_time -ge $timeout ]; then
+            echo
+            echo "🔴 Timeout waiting for PipelineRun to appear after ${timeout} seconds"
+            exit 1
+        fi
+
+        sleep 5
+        echo -n "."
+        # get only running pipelines
+        component_push_plr_name=$(kubectl get pr -l "pipelinesascode.tekton.dev/sha=$SHA" -n "${tenant_namespace}" --no-headers 2>/dev/null | { grep "Running" || true; } | awk '{print $1}')
     done
-    echo ""
-    echo " Found: $component_push_plr_name"
-    echo "PipelineRun URL: $(get_build_pipeline_run_url "${tenant_namespace}" "${application_name}" "${component_push_plr_name}")"
+    echo
+    echo "✅ Found PipelineRun: ${component_push_plr_name}"
+    echo "   PipelineRun URL: $(get_build_pipeline_run_url "${tenant_namespace}" "${application_name}" "${component_push_plr_name}")"
 }
 
-# Function to wait for Component push PipelineRun to complete
-# Relies on global variables: component_push_plr_name, tenant_namespace, SCRIPT_DIR, component_repo_name, pr_number, application_name
+# Function to wait for PipelineRun to complete
+# Relies on global variables: component_push_plr_name, tenant_namespace
 wait_for_plr_to_complete() {
-    echo -n "Waiting for Component push PLR ${component_push_plr_name} in namespace ${tenant_namespace} to complete: "
+    local timeout=1800  # 30 minutes timeout
+    local start_time=$(date +%s)
+    local current_time
+    local elapsed_time
     local completed=""
     local retry_attempted="false"
-    while [ -z "${completed}" ]; do
-      sleep 1
-      local component_plr_json
-      component_plr_json=$(kubectl get pr/"$component_push_plr_name" -n "${tenant_namespace}" -ojson 2>/dev/null)
-      if [ -z "$component_plr_json" ]; then
-          echo -n "?"
-          sleep 4
-          continue
-      fi
 
-      local component_plr_status
-      component_plr_status=$(jq -r '.status.conditions[]? | select(.type=="Succeeded") | .status' <<< "${component_plr_json}")
+    echo -n "Waiting for PipelineRun ${component_push_plr_name} to complete"
+    while [ -z "$completed" ]; do
+        current_time=$(date +%s)
+        elapsed_time=$((current_time - start_time))
 
-      if [ "$component_plr_status" == "True" ]; then
-        completed="Success"
-      elif [ "$component_plr_status" == "False" ]; then
-        local component_plr_reason
-        component_plr_reason=$(jq -r '.status.conditions[]? | select(.type=="Succeeded") | .reason' <<< "${component_plr_json}")
-        echo ""
-        echo "PipelineRun ${component_push_plr_name} reported status False with reason: ${component_plr_reason}"
-        /usr/bin/tkn pr logs "$component_push_plr_name" -f --timestamps -n "${tenant_namespace}" || echo "Warning: tkn logs command failed."
-
-        if [ "$component_plr_reason" == "Failed" ] || [ "$component_plr_reason" == "PipelineRunCancelled" ] || [ "$component_plr_reason" == "PipelineRunTimeout" ]; then
-          if [ "${retry_attempted}" == "false" ]; then
-            echo "Attempting retry for PR ${pr_number} in repo ${component_repo_name}..."
-            "${SCRIPT_DIR}/../scripts/add-retry-comment-to-pr.sh" "$component_repo_name" "$pr_number"
-            retry_attempted="true"
-          else
-            echo "Retry already attempted. Exiting."
-            echo "PipelineRun URL: $(get_build_pipeline_run_url "${tenant_namespace}" "${application_name}" "${component_push_plr_name}")"
-            log_error "PipelineRun failed after retry."
-          fi
-        else
-           echo -n "."
+        if [ $elapsed_time -ge $timeout ]; then
+            echo
+            echo "🔴 Timeout waiting for PipelineRun to complete after ${timeout} seconds"
+            exit 1
         fi
-      else
-        echo -n "."
-      fi
+
+        sleep 5
+
+        # Check if the pipeline run is completed
+        completed=$(kubectl get pipelinerun "${component_push_plr_name}" -n "${tenant_namespace}" -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}' 2>/dev/null)
+
+        # If completed, check the status
+        if [ -n "$completed" ]; then
+          echo -n "."
+          if [ "$completed" == "True" ]; then
+            echo "" 
+            echo "✅ PipelineRun completed successfully"
+            break
+          elif [ "$completed" == "False" ]; then
+            echo "" 
+            echo "❌ PipelineRun failed"
+            if [ "${retry_attempted}" == "false" ]; then
+                echo "Attempting retry for PR ${pr_number} in repo ${component_repo_name}..."
+                kubectl annotate components/${component_name} build.appstudio.openshift.io/request=trigger-pac-build -n "${tenant_namespace}"
+                wait_for_plr_to_appear # component_push_plr_name is set here
+                retry_attempted="true"
+            else
+                echo "Retry already attempted. Exiting."
+                exit 1
+            fi
+          fi
+          completed=""
+        fi
     done
-    echo -e "\n✅️ PLR Status: $completed"
     echo "PipelineRun URL: $(get_build_pipeline_run_url "${tenant_namespace}" "${application_name}" "${component_push_plr_name}")"
 }
 
-# Function to wait for Release to appear
-# Modifies global variables: RELEASE_NAME, RELEASE_NAMESPACE (by exporting)
-# Relies on global variables: component_push_plr_name, tenant_namespace, SCRIPT_DIR
-wait_for_release() {
-    echo -n "Waiting for Release associated with PLR ${component_push_plr_name} in namespace ${tenant_namespace}: "
-    # release_name is made global by not declaring it local
-    release_name=""
-    while [ -z "${release_name}" ]; do
+# Function to wait for Releases to complete
+# Relies on global variables: component_push_plr_name, tenant_namespace, SUITE_DIR
+wait_for_releases() {
+    local timeout=300  # 5 minutes timeout
+    local start_time=$(date +%s)
+    local current_time
+    local elapsed_time
+    local release_names=""
+
+    echo -n "Waiting for Releases associated with PLR ${component_push_plr_name} in namespace ${tenant_namespace}: "
+    while [ -z "${release_names}" ]; do
+      current_time=$(date +%s)
+      elapsed_time=$((current_time - start_time))
+
+      if [ $elapsed_time -ge $timeout ]; then
+          echo
+          echo "🔴 Timeout waiting for Release to appear after ${timeout} seconds"
+          exit 1
+      fi
+
       sleep 5
       echo -n "."
-      release_name=$(kubectl get release -l "appstudio.openshift.io/build-pipelinerun=${component_push_plr_name}"  -n "${tenant_namespace}" -ojson 2>/dev/null | jq -r '.items[0].metadata.name // ""')
+      release_names=$(kubectl get release -l "appstudio.openshift.io/build-pipelinerun=${component_push_plr_name}"  \
+        -n "${tenant_namespace}" -ojson 2>/dev/null | jq -r '.items[].metadata.name // ""' | xargs)
     done
-    echo " Found: $release_name"
+    echo ""
+    echo "✅ Found: $release_names"
 
-    export RELEASE_NAME=${release_name}
+    RUNNING_JOBS="\j" # Bash parameter for number of jobs currently running
+
     export RELEASE_NAMESPACE=${tenant_namespace}
-    "${SCRIPT_DIR}/../scripts/wait-for-release.sh"
+    for release in ${release_names};
+    do
+      export RELEASE_NAME=${release}
+      "${SUITE_DIR}/../scripts/wait-for-release.sh" &
+    done
+
+    # Wait for remaining processes to finish
+    while (( ${RUNNING_JOBS@P} > 0 )); do
+        wait -n
+    done
+
+    export RELEASE_NAMES="$release_names"
+}
+
+# Function to clean up old resources based on originating tool label
+# Arguments:
+#   $1: originating_tool label value
+#   $2: age in minutes (optional, defaults to 1440 or 24 hours)
+cleanup_old_resources() {
+    local originating_tool="$1"
+    local age_minutes="${2:-1440}"
+
+    if [ -z "$originating_tool" ]; then
+        echo "🔴 Error: originating_tool parameter is required"
+        return 1
+    fi
+
+    # disable exit on error to allow for cleanup of old resources
+    set +e
+    # Create temporary file and ensure it's cleaned up on exit
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    local old_resources_file="${temp_dir}/old-resources.txt"
+    trap 'rm -rf "${temp_dir}"' RETURN
+
+    echo "🔍 Searching for resources with originating-tool=${originating_tool}"
+
+    local kinds="enterprisecontractpolicy rp rpa rolebinding sa clusterrole secret application component"
+    for kind in $kinds; do
+        local namespaces="dev-release-team-tenant managed-release-team-tenant"
+        for namespace in $namespaces; do
+            echo "Checking for old resources of kind: $kind in namespace: $namespace"
+            kubectl get "$kind" -n "${namespace}" -l originating-tool="${originating_tool}" -o go-template='{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\n"}}{{end}}' | \
+            awk -v cutoff_time="$(date -d "${age_minutes} minutes ago" +%s)" -v kind=$kind '
+            {
+                cmd = "date -d " $3 " +%s"
+                cmd | getline created_at
+                close(cmd)
+                if (created_at < cutoff_time) {
+                    print "kubectl delete " kind "/" $2 " -n " $1
+                }
+            }
+            ' | tee -a "${old_resources_file}"
+        done
+    done
+
+    if [ -s "${old_resources_file}" ]; then
+        echo "Executing cleanup commands from ${old_resources_file}"
+        sh "${old_resources_file}"
+    else
+        echo "No old resources found to clean up"
+    fi
+    # re-enable exit on error
+    set -e
+}
+
+# Function to verify Release contents
+verify_release_contents() {
+    echo "📝 Note: Test Suite may implement ${FUNCNAME[0]}" \
+     "to verify Release contents in their test.sh file"
+}
+
+# Function to patch the component source BEFORE Component creation
+patch_component_source() {
+    echo "📝 Note: Test Suite may implement ${FUNCNAME[0]}" \
+     "to patch the component source BEFORE Component creation in their test.sh file"
+}
+
+# Function to patch the component source BEFORE MERGE
+patch_component_source_before_merge() {
+    echo "📝 Note: Test Suite may implement ${FUNCNAME[0]}" \
+     "to patch the component source BEFORE MERGE in their test.sh file"
 }

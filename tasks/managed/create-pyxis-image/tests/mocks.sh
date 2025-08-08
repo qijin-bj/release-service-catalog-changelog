@@ -5,9 +5,36 @@ set -exo pipefail
 
 function create_container_image() {
   echo $* >> $(params.dataDir)/mock_create_container_image.txt
-  # The image id is a 4 digit number with leading zeros calculated from the call number,
-  # e.g. 0001, 0002, 0003...
-  echo The image id is $(awk 'END{printf("%04i", NR)}' $(params.dataDir)/mock_create_container_image.txt)
+  
+  # Extract repository name from parameters to determine the line number
+  # This allows us to have a thread-safe way to determine the image id without locking
+  local repository=""
+  local args=("$@")
+  
+  # Parse arguments to extract the --name parameter (repository)
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "--name" && $((i+1)) -lt ${#args[@]} ]]; then
+      repository="${args[i+1]}"
+      break
+    fi
+  done
+  
+  # Find the line number where this repository appears in the file
+  local matching_lines=$(grep -n -- "--name $repository" "$(params.dataDir)/mock_create_container_image.txt")
+  local line_count=$(echo "$matching_lines" | wc -l)
+  
+  # Use the last line number for this repository (handles multi-arch images)
+  # WARNING: this is thread safe as long as the repository name is unique. If you need to
+  # test thread safety, you need to use a different repository name for each request.
+  if [[ "$line_count" -gt 0 ]]; then
+    local line_number=$(echo "$matching_lines" | tail -1 | cut -d: -f1)
+    printf "The image id is %04d\n" "$line_number"
+  else
+    # Fallback: count total lines in file (original behavior)
+    local total_lines=$(wc -l < "$(params.dataDir)/mock_create_container_image.txt" 2>/dev/null || echo "0")
+    local image_id=$((total_lines + 1))
+    printf "The image id is %04d\n" "$image_id"
+  fi
 
   if [[ "$*" != "--pyxis-url https://pyxis.preprod.api.redhat.com/ --certified false --tags "*" --is-latest false --verbose --oras-manifest-fetch "*" --name "*" --media-type "*" --digest "*" --architecture-digest "*" --architecture "*" --rh-push "* ]]
   then
@@ -30,10 +57,10 @@ function cleanup_tags() {
 
 function skopeo() {
   echo $* >> $(params.dataDir)/mock_skopeo.txt
-  if [[ "$*" == "inspect --raw docker://registry.io/oci-artifact"* ]]
+  if [[ "$*" == "inspect --retry-times 3 --raw docker://registry.io/oci-artifact"* ]]
   then
     echo '{"mediaType": "application/vnd.oci.image.index.v1+json"}'
-  elif [[ "$*" == "inspect --raw docker://"* ]] || [[ "$*" == "inspect --no-tags --override-os linux --override-arch "*" docker://"* ]]
+  elif [[ "$*" == "inspect --retry-times 3 --raw docker://"* ]] || [[ "$*" == "inspect --no-tags --override-os linux --override-arch "*" docker://"* ]]
   then
     echo '{"mediaType": "my_media_type+gzip"}'
   else
@@ -64,12 +91,14 @@ function select-oci-auth() {
 
 function oras() {
   echo $* >> $(params.dataDir)/mock_oras.txt
-  if [[ "$*" == "blob fetch --registry-config"*"/tmp/oras-blob-fetch-beef.gz"* ]]
+  if [[ "$*" == "blob fetch --registry-config"*"/tmp/oras-blob-fetch"*"-beef.gz"* ]]
   then
-    echo -n 'H4sIAAAAAAAAA0vKzEssqlRISSxJVEjPTy1WyEgtSgUAXVhZVxUAAAA=' | base64 -d > /tmp/oras-blob-fetch-beef.gz
-  elif [[ "$*" == "blob fetch --registry-config"*"/tmp/oras-blob-fetch-pork.gz"* ]]
+    index=$(echo "$*" | grep -oP 'oras-blob-fetch-\K\d+(?=-beef\.gz)')
+    echo -n 'H4sIAAAAAAAAA0vKzEssqlRISSxJVEjPTy1WyEgtSgUAXVhZVxUAAAA=' | base64 -d > /tmp/oras-blob-fetch-${index}-beef.gz
+  elif [[ "$*" == "blob fetch --registry-config"*"/tmp/oras-blob-fetch"*"-pork.gz"* ]]
   then
-    echo -n 'H4sIAAAAAAAAA8vNL0pVSEksSQQA2pxWLAkAAAA=' | base64 -d > /tmp/oras-blob-fetch-pork.gz
+    index=$(echo "$*" | grep -oP 'oras-blob-fetch-\K\d+(?=-pork\.gz)')
+    echo -n 'H4sIAAAAAAAAA8vNL0pVSEksSQQA2pxWLAkAAAA=' | base64 -d > /tmp/oras-blob-fetch-${index}-pork.gz
   elif [[ "$*" == "manifest fetch --registry-config"*image-with-gzipped-layers* ]]
   then
     echo '{"mediaType": "my_media_type", "layers": [{"mediaType": "blob+gzip", "digest": "beef"}, {"mediaType": "blob+gzip", "digest": "pork"}]}'

@@ -3,14 +3,12 @@ apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
   name: rh-push-to-registry-redhat-io
-  labels:
-    app.kubernetes.io/version: "5.0.1"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
-    Tekton pipeline to release content to registry.redhat.io registry
+  description: |-
+    Tekton pipeline to release content to registry.redhat.io registry.
   params:
     - name: release
       type: string
@@ -37,14 +35,6 @@ spec:
         Extra rule data to be merged into the policy specified in params.enterpriseContractPolicy. Use syntax
         "key1=value1,key2=value2..."
       default: "pipeline_intention=release"
-    - name: enterpriseContractTimeout
-      type: string
-      description: Timeout setting for `ec validate`
-      default: 90m0s
-    - name: enterpriseContractWorkerCount
-      type: string
-      description: Number of parallel workers for policy evaluation
-      default: 4
     - name: postCleanUp
       type: string
       description: Cleans up workspace after finishing executing the pipeline
@@ -64,13 +54,14 @@ spec:
       description: The revision in the taskGitUrl repo to be used
     - name: ociStorage
       type: string
+      description: The OCI repository where the Trusted Artifacts are stored
       default: "quay.io/konflux-ci/release-service-trusted-artifacts"
     - name: orasOptions
       description: oras options to pass to Trusted Artifacts calls
       type: string
       default: ""
     - name: trustedArtifactsDebug
-      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable.
+      description: Flag to enable debug logging in trusted artifacts. Set to a non-empty string to enable
       type: string
       default: ""
     - name: dataDir
@@ -143,6 +134,45 @@ spec:
           workspace: release-workspace
       runAfter:
         - verify-access-to-resources
+    - name: collect-task-params
+      taskRef:
+        resolver: "git"
+        params:
+          - name: url
+            value: $(params.taskGitUrl)
+          - name: revision
+            value: $(params.taskGitRevision)
+          - name: pathInRepo
+            value: tasks/managed/collect-task-params/collect-task-params.yaml
+      params:
+        - name: dataDir
+          value: "$(params.dataDir)"
+        - name: dataPath
+          value: "$(tasks.collect-data.results.data)"
+        - name: keysToExtract
+          value: |
+            [
+              {"resultIndex": 0, "key": ".conforma.workerCount", "default": "4"},
+              {"resultIndex": 1, "key": ".conforma.timeout", "default": "1h30m0s"},
+              {"resultIndex": 2, "key": ".sign.cosignSecretName", "default": ""},
+              {"resultIndex": 3, "key": ".pyxis.secret"},
+              {"resultIndex": 4, "key": ".pyxis.server", "default": "production"}
+            ]
+        - name: taskGitUrl
+          value: "$(params.taskGitUrl)"
+        - name: taskGitRevision
+          value: "$(params.taskGitRevision)"
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: sourceDataArtifact
+          value: "$(tasks.collect-data.results.sourceDataArtifact)"
+        - name: trustedArtifactsDebug
+          value: "$(params.trustedArtifactsDebug)"
+      workspaces:
+        - name: data
+          workspace: release-workspace
+      runAfter:
+        - collect-data
     - name: check-data-keys
       params:
         - name: dataPath
@@ -150,10 +180,12 @@ spec:
         - name: schema
           value: $(params.taskGitUrl)/raw/$(params.taskGitRevision)/schema/dataKeys.json
         - name: systems
-          value:
-            - pyxis
-            - mapping
-            - sign
+          value: |
+            [
+              {"systemName": "pyxis", "dynamic": false},
+              {"systemName": "mapping", "dynamic": false},
+              {"systemName": "sign", "dynamic": false}
+            ]
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
@@ -306,49 +338,20 @@ spec:
         - name: EXTRA_RULE_DATA
           value: $(params.enterpriseContractExtraRuleData)
         - name: TIMEOUT
-          value: $(params.enterpriseContractTimeout)
+          value: "$(tasks.collect-task-params.results.extractedValues[1])"
         - name: WORKERS
-          value: $(params.enterpriseContractWorkerCount)
+          value: "$(tasks.collect-task-params.results.extractedValues[0])"
         - name: SOURCE_DATA_ARTIFACT
           value: "$(tasks.apply-mapping.results.sourceDataArtifact)"
         - name: TRUSTED_ARTIFACTS_DEBUG
           value: "$(params.trustedArtifactsDebug)"
       runAfter:
         - apply-mapping
-    - name: collect-cosign-params
-      taskRef:
-        resolver: "git"
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/collect-cosign-params/collect-cosign-params.yaml
-      params:
-        - name: dataPath
-          value: "$(tasks.collect-data.results.data)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.collect-data.results.sourceDataArtifact)"
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - collect-data
+        - collect-task-params
     - name: rh-sign-image-cosign
       timeout: "6h00m0s"
       when:
-        - input: $(tasks.collect-cosign-params.results.cosign-secret-name)
+        - input: $(tasks.collect-task-params.results.extractedValues[2])
           operator: notin
           values: [""]
       taskRef:
@@ -364,7 +367,7 @@ spec:
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: secretName
-          value: "$(tasks.collect-cosign-params.results.cosign-secret-name)"
+          value: "$(tasks.collect-task-params.results.extractedValues[2])"
         - name: signRegistryAccessPath
           value: "$(tasks.publish-pyxis-repository.results.signRegistryAccessPath)"
         - name: ociStorage
@@ -384,7 +387,7 @@ spec:
           workspace: release-workspace
       runAfter:
         - push-snapshot
-        - collect-cosign-params
+        - collect-task-params
     - name: push-snapshot
       retries: 5
       when:
@@ -424,36 +427,6 @@ spec:
           workspace: release-workspace
       runAfter:
         - rh-sign-image
-    - name: collect-pyxis-params
-      taskRef:
-        resolver: "git"
-        params:
-          - name: url
-            value: $(params.taskGitUrl)
-          - name: revision
-            value: $(params.taskGitRevision)
-          - name: pathInRepo
-            value: tasks/managed/collect-pyxis-params/collect-pyxis-params.yaml
-      params:
-        - name: dataPath
-          value: "$(tasks.collect-data.results.data)"
-        - name: ociStorage
-          value: $(params.ociStorage)
-        - name: sourceDataArtifact
-          value: "$(tasks.collect-data.results.sourceDataArtifact)"
-        - name: dataDir
-          value: $(params.dataDir)
-        - name: trustedArtifactsDebug
-          value: "$(params.trustedArtifactsDebug)"
-        - name: taskGitUrl
-          value: "$(params.taskGitUrl)"
-        - name: taskGitRevision
-          value: "$(params.taskGitRevision)"
-      workspaces:
-        - name: data
-          workspace: release-workspace
-      runAfter:
-        - collect-data
     - name: rh-sign-image
       timeout: "6h00m0s"
       retries: 3
@@ -482,9 +455,9 @@ spec:
         - name: pipelineRunUid
           value: $(context.pipelineRun.uid)
         - name: pyxisServer
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: signRegistryAccessPath
           value: $(tasks.publish-pyxis-repository.results.signRegistryAccessPath)
         - name: ociStorage
@@ -507,6 +480,7 @@ spec:
         - apply-mapping
         - publish-pyxis-repository
         - extract-requester-from-release
+        - collect-task-params
     - name: create-pyxis-image
       retries: 5
       taskRef:
@@ -520,9 +494,9 @@ spec:
             value: tasks/managed/create-pyxis-image/create-pyxis-image.yaml
       params:
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: rhPush
           value: "true"
         - name: snapshotPath
@@ -546,6 +520,7 @@ spec:
           workspace: release-workspace
       runAfter:
         - push-snapshot
+        - collect-task-params
     - name: publish-pyxis-repository
       retries: 5
       taskRef:
@@ -559,9 +534,9 @@ spec:
             value: tasks/managed/publish-pyxis-repository/publish-pyxis-repository.yaml
       params:
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: snapshotPath
           value: "$(tasks.collect-data.results.snapshotSpec)"
         - name: dataPath
@@ -584,7 +559,7 @@ spec:
         - name: data
           workspace: release-workspace
       runAfter:
-        - collect-pyxis-params
+        - collect-task-params
         - apply-mapping
     - name: push-rpm-data-to-pyxis
       retries: 5
@@ -601,9 +576,9 @@ spec:
         - name: pyxisJsonPath
           value: $(tasks.create-pyxis-image.results.pyxisDataPath)
         - name: server
-          value: $(tasks.collect-pyxis-params.results.server)
+          value: $(tasks.collect-task-params.results.extractedValues[4])
         - name: pyxisSecret
-          value: $(tasks.collect-pyxis-params.results.secret)
+          value: $(tasks.collect-task-params.results.extractedValues[3])
         - name: ociStorage
           value: $(params.ociStorage)
         - name: sourceDataArtifact
@@ -623,6 +598,7 @@ spec:
           workspace: release-workspace
       runAfter:
         - create-pyxis-image
+        - collect-task-params
     - name: run-file-updates
       params:
         - name: fileUpdatesPath
@@ -668,8 +644,6 @@ spec:
           value: $(params.release)
         - name: resultsDirPath
           value: $(tasks.collect-data.results.resultsDir)
-        - name: resultsDirName
-          value: "results"
         - name: ociStorage
           value: $(params.ociStorage)
         - name: resultArtifacts

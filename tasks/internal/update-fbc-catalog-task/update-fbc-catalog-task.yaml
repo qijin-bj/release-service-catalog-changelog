@@ -3,13 +3,11 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: update-fbc-catalog-task
-  labels:
-    app.kubernetes.io/version: "1.2.0"
   annotations:
     tekton.dev/pipelines.minVersion: "0.12.1"
     tekton.dev/tags: release
 spec:
-  description: >-
+  description: |-
     Tekton task to submit a IIB build request to add/update a fbc-fragment to an index image
   params:
     - name: fbcFragment
@@ -27,10 +25,10 @@ spec:
       type: string
       description: >-
         List of additional tags the internal index image copy should be
-        tagged with.
+        tagged with
     - name: addArches
       type: string
-      description: List of arches the index image should be built for.
+      description: List of arches the index image should be built for
     - name: buildTimeoutSeconds
       type: string
       default: "300"
@@ -68,9 +66,9 @@ spec:
         quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
       computeResources:
         limits:
-          memory: 128Mi
+          memory: 512Mi
         requests:
-          memory: 128Mi
+          memory: 512Mi
           cpu: '1'
       env:
         - name: IIB_SERVICE_URL
@@ -135,18 +133,23 @@ spec:
           # if a previous build is found, but from_index and index_image are different, it means that the
           # previous build was a staging index build, then we should return here causing the task to call
           # IIB again, but with overwrite_from_index set to true.
-          if [ "$(jq '.from_index != .index_image' <<< "${build}")" == true ]; then
+          # However, if we are pushing to a stagedIndex, we want to ignore this condition and continue
+          # to determine whether we should reuse a previous build.
+          if [ "$(params.stagedIndex)" != "true" ] && \
+             [ "$(jq '.from_index != .index_image' <<< "${build}")" = true ]; then
             return 0
           fi
 
           if [ "$(jq -r '.state' <<< "${build}")" = "complete" ]; then
             indexImageResolved="$(jq -r '.index_image_resolved' <<<  "${build}")"
-            newCatalogCreatedDate="$(date --date "$(skopeo inspect --config "docker://${indexImageResolved}" | \
+            newCatalogCreatedDate="$(date --date "$(skopeo inspect \
+              --retry-times 3 --config "docker://${indexImageResolved}" | \
               jq -r .created)" "+%s")"
 
             # authentication is only required for the targetIndex
             create_auth_file
-            targetIndexCreated="$(skopeo inspect --config "docker://$(params.targetIndex)" | jq -r .created)"
+            targetIndexCreated="$(skopeo inspect --retry-times 3 --config "docker://$(params.targetIndex)" | \
+              jq -r .created)"
 
             if [ -z "${targetIndexCreated}" ]; then
               # we cannot determine the target index created date, stop here. This causes the task to trigger
@@ -286,6 +289,12 @@ spec:
     - name: update-fbc-catalog-wait-for-iib-build-step
       image: >-
         quay.io/konflux-ci/release-service-utils:e633d51cd41d73e4b3310face21bb980af7a662f
+      computeResources:
+        limits:
+          memory: 256Mi
+        requests:
+          memory: 256Mi
+          cpu: 250m
       env:
         - name: IIB_SERVICE_URL
           valueFrom:
@@ -336,7 +345,7 @@ spec:
             # get the manifest digests
             indexImageCopy=$(jq -cr .internal_index_image_copy < "$(results.jsonBuildInfo.path)")
             # Use this to obtain the manifest digests for each arch in manifest list
-            indexImageDigestsRaw=$(skopeo inspect --raw "docker://${indexImageCopy}")
+            indexImageDigestsRaw=$(skopeo inspect --retry-times 3 --raw "docker://${indexImageCopy}")
             # according the IIB team,
             #  "all index images will always be multi-arch with a manifest list"
             #
